@@ -1,0 +1,1113 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Eligibility Assessment Evaluator</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<script src="https://cdn.sheetjs.com/xlsx-latest/package/dist/xlsx.full.min.js"></script>
+<style>
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; }
+  .badge-eligible   { background:#dcfce7; color:#166534; }
+  .badge-ineligible { background:#f1f5f9; color:#475569; }
+  .badge-review     { background:#fef9c3; color:#854d0e; }
+  .badge-yes        { background:#dcfce7; color:#166534; }
+  .badge-no         { background:#fee2e2; color:#991b1b; }
+  .badge-na         { background:#f1f5f9; color:#475569; }
+  tr.selected td    { background:#eff6ff !important; }
+  #resultsTable tbody tr:hover td { background:#f8fafc; cursor:pointer; }
+  .panel { height: calc(100vh - 64px); overflow-y: auto; }
+  .truncate-cell { max-width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .log-line { font-family: monospace; font-size: 11px; }
+</style>
+</head>
+<body class="bg-gray-50">
+
+<!-- Header -->
+<div class="bg-slate-800 text-white px-6 py-3 flex items-center justify-between sticky top-0 z-20">
+  <div>
+    <h1 class="text-lg font-semibold">Eligibility Assessment Evaluator</h1>
+    <p class="text-xs text-slate-400">Evaluate engine logic against test cases and clinical guidelines</p>
+  </div>
+  <div class="flex items-center gap-2">
+    <button id="exportBtn" onclick="exportCSV()" class="hidden bg-green-600 hover:bg-green-700 text-white text-sm px-4 py-2 rounded">⬇ Export CSV</button>
+    <button id="saveBtn"   onclick="saveEvaluation()" class="hidden bg-blue-500 hover:bg-blue-600 text-white text-sm px-4 py-2 rounded">💾 Save</button>
+    <button id="newBtn"    onclick="newEvaluation()"  class="hidden bg-slate-600 hover:bg-slate-500 text-white text-sm px-4 py-2 rounded">+ New</button>
+  </div>
+</div>
+
+<!-- Main layout -->
+<div class="flex" style="height:calc(100vh - 64px)">
+
+  <!-- LEFT: Setup panel -->
+  <div class="w-72 flex-shrink-0 bg-white border-r border-gray-200 panel p-4 space-y-5">
+
+    <!-- GitHub -->
+    <div>
+      <h2 class="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-2">Engine Source</h2>
+      <label class="block text-xs text-gray-600 mb-1">GitHub Repo URL</label>
+      <input id="repoUrl" type="text" placeholder="https://github.com/org/repo"
+        class="w-full text-xs border border-gray-300 rounded px-2 py-1.5 focus:outline-none focus:ring-1 focus:ring-blue-400"/>
+      <label class="block text-xs text-gray-600 mb-1 mt-2">GitHub Token (for private repos)</label>
+      <input id="ghToken" type="password" placeholder="ghp_..."
+        class="w-full text-xs border border-gray-300 rounded px-2 py-1.5 focus:outline-none focus:ring-1 focus:ring-blue-400"/>
+      <label class="block text-xs text-gray-600 mb-1 mt-2">Engine file path in repo</label>
+      <input id="enginePath" type="text" value="src/features/survey/cancerEligibilityEngine.ts"
+        class="w-full text-xs border border-gray-300 rounded px-2 py-1.5 focus:outline-none focus:ring-1 focus:ring-blue-400"/>
+      <button onclick="fetchEngine()" class="mt-2 w-full bg-slate-700 hover:bg-slate-800 text-white text-xs py-1.5 rounded">
+        🔗 Fetch Engine from GitHub
+      </button>
+      <div id="engineStatus" class="mt-2 text-xs text-gray-500 italic">Using bundled fallback engine</div>
+    </div>
+
+    <!-- Test Cases -->
+    <div>
+      <h2 class="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-2">Test Cases</h2>
+      <label class="block text-xs text-gray-600 mb-1">Upload XLSX (test cases)</label>
+      <input id="testCasesFile" type="file" accept=".xlsx,.xls"
+        class="w-full text-xs text-gray-600 file:mr-2 file:text-xs file:border-0 file:bg-blue-50 file:text-blue-700 file:rounded file:px-2 file:py-1"/>
+      <div id="testCasesStatus" class="mt-1 text-xs text-gray-400"></div>
+    </div>
+
+    <!-- Criteria -->
+    <div>
+      <h2 class="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-2">Criteria</h2>
+      <label class="block text-xs text-gray-600 mb-1">Upload XLSX (criteria)</label>
+      <input id="criteriaFile" type="file" accept=".xlsx,.xls"
+        class="w-full text-xs text-gray-600 file:mr-2 file:text-xs file:border-0 file:bg-blue-50 file:text-blue-700 file:rounded file:px-2 file:py-1"/>
+      <div id="criteriaStatus" class="mt-1 text-xs text-gray-400"></div>
+    </div>
+
+    <!-- Guidelines -->
+    <div>
+      <h2 class="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-2">Guidelines</h2>
+      <label class="block text-xs text-gray-600 mb-1">Upload PDFs (optional)</label>
+      <input id="pdfFiles" type="file" accept=".pdf" multiple
+        class="w-full text-xs text-gray-600 file:mr-2 file:text-xs file:border-0 file:bg-purple-50 file:text-purple-700 file:rounded file:px-2 file:py-1"/>
+      <label class="block text-xs text-gray-600 mb-1 mt-2">Or enter guideline reference</label>
+      <div class="flex gap-1">
+        <input id="guidelineText" type="text" placeholder="e.g. NCCN HBOC v2.2024"
+          class="flex-1 text-xs border border-gray-300 rounded px-2 py-1.5 focus:outline-none focus:ring-1 focus:ring-purple-400"
+          onkeydown="if(event.key==='Enter') addGuidelineRef()"/>
+        <button onclick="addGuidelineRef()" class="bg-purple-100 hover:bg-purple-200 text-purple-700 text-xs px-2 py-1.5 rounded whitespace-nowrap">+ Add</button>
+      </div>
+      <div id="guidelineList" class="mt-2 space-y-1"></div>
+    </div>
+
+    <!-- Run -->
+    <div>
+      <button onclick="runEvaluation()" class="w-full bg-blue-600 hover:bg-blue-700 text-white font-semibold text-sm py-2 rounded">
+        ▶ Run Evaluation
+      </button>
+      <div id="runLog" class="mt-2 space-y-0.5 max-h-32 overflow-y-auto"></div>
+    </div>
+
+    <!-- Saved Evaluations -->
+    <div>
+      <h2 class="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-2">Saved Evaluations</h2>
+      <div id="savedList" class="space-y-1.5 text-xs"></div>
+    </div>
+
+  </div>
+
+  <!-- CENTER: Results -->
+  <div class="flex-1 panel bg-white">
+
+    <!-- Summary bar -->
+    <div id="summaryBar" class="hidden border-b border-gray-200 px-4 py-3 bg-slate-50 flex items-center gap-6 flex-wrap">
+      <div class="text-sm"><span id="totalCases" class="font-bold text-slate-800">0</span> <span class="text-slate-500">cases</span></div>
+      <div class="text-sm"><span id="critPct" class="font-bold text-green-700">—</span> <span class="text-slate-500">criteria match</span></div>
+      <div class="text-sm"><span id="nccnPct" class="font-bold text-blue-700">—</span> <span class="text-slate-500">guidelines consistent</span></div>
+      <div class="text-sm"><span id="eligCount" class="font-bold"></span></div>
+    </div>
+
+    <!-- Summary description -->
+    <div id="summaryDesc" class="hidden border-b border-gray-200 px-4 py-3 bg-blue-50">
+      <div class="flex items-center justify-between mb-1">
+        <span class="text-xs font-semibold text-blue-800 uppercase tracking-wider">Evaluation Summary</span>
+      </div>
+      <pre id="summaryDescText" class="text-xs text-gray-700 leading-relaxed whitespace-pre-wrap font-sans"></pre>
+    </div>
+
+    <!-- Filters -->
+    <div id="filterBar" class="hidden border-b border-gray-200 px-4 py-2 flex items-center gap-2 flex-wrap bg-white sticky top-0 z-10">
+      <input id="searchBox" type="text" placeholder="Search scenario ID or description…"
+        oninput="applyFilters()"
+        class="text-xs border border-gray-300 rounded px-2 py-1.5 w-56 focus:outline-none focus:ring-1 focus:ring-blue-400"/>
+      <select id="filterOutcome" onchange="applyFilters()" class="text-xs border border-gray-300 rounded px-2 py-1.5">
+        <option value="">All Outcomes</option>
+        <option>ELIGIBLE</option><option>INELIGIBLE</option><option>REQUIRES_REVIEW</option>
+      </select>
+      <select id="filterCriteria" onchange="applyFilters()" class="text-xs border border-gray-300 rounded px-2 py-1.5">
+        <option value="">Criteria: All</option>
+        <option value="YES">Criteria: YES</option><option value="NO">Criteria: NO</option>
+      </select>
+      <select id="filterNccn" onchange="applyFilters()" class="text-xs border border-gray-300 rounded px-2 py-1.5">
+        <option value="">Guidelines: All</option>
+        <option value="YES">Guidelines: YES</option><option value="NO">Guidelines: NO</option>
+      </select>
+      <select id="filterCategory" onchange="applyFilters()" class="text-xs border border-gray-300 rounded px-2 py-1.5">
+        <option value="">All Categories</option>
+      </select>
+      <span id="filterCount" class="text-xs text-gray-400 ml-2"></span>
+    </div>
+
+    <!-- Table -->
+    <div class="overflow-x-auto">
+      <table id="resultsTable" class="w-full text-xs">
+        <thead class="bg-slate-100 text-slate-600 sticky top-0">
+          <tr>
+            <th class="text-left px-3 py-2 font-semibold">Scenario ID</th>
+            <th class="text-left px-3 py-2 font-semibold">Rule Category</th>
+            <th class="text-left px-3 py-2 font-semibold">Tool Outcome</th>
+            <th class="text-left px-3 py-2 font-semibold">Intended</th>
+            <th class="text-left px-3 py-2 font-semibold">Criteria</th>
+            <th class="text-left px-3 py-2 font-semibold">Guidelines</th>
+          </tr>
+        </thead>
+        <tbody id="tableBody" class="divide-y divide-gray-100"></tbody>
+      </table>
+      <div id="emptyState" class="text-center py-20 text-gray-400 text-sm">
+        Upload test cases and click Run Evaluation to see results
+      </div>
+    </div>
+  </div>
+
+  <!-- RIGHT: Detail panel -->
+  <div class="w-80 flex-shrink-0 bg-white border-l border-gray-200 panel p-4">
+    <div id="detailEmpty" class="text-xs text-gray-400 italic text-center mt-8">Click a row to see details</div>
+    <div id="detailContent" class="hidden space-y-3">
+      <div>
+        <div id="detailId" class="font-mono font-semibold text-sm text-slate-800"></div>
+        <div id="detailCategory" class="text-xs text-slate-500 mt-0.5"></div>
+      </div>
+      <div id="detailDesc" class="text-xs text-gray-600 leading-relaxed border-l-2 border-blue-200 pl-2"></div>
+      <div class="flex gap-2">
+        <div>
+          <div class="text-xs text-gray-400 mb-1">Tool Outcome</div>
+          <span id="detailTool" class="badge px-2 py-0.5 rounded text-xs font-semibold"></span>
+        </div>
+        <div>
+          <div class="text-xs text-gray-400 mb-1">Intended</div>
+          <span id="detailIntended" class="badge px-2 py-0.5 rounded text-xs font-semibold"></span>
+        </div>
+      </div>
+      <div class="flex gap-3">
+        <div>
+          <div class="text-xs text-gray-400 mb-1">Criteria Match</div>
+          <span id="detailCrit" class="badge px-2 py-0.5 rounded text-xs font-semibold"></span>
+        </div>
+        <div>
+          <div class="text-xs text-gray-400 mb-1">Guidelines Match</div>
+          <span id="detailNccn" class="badge px-2 py-0.5 rounded text-xs font-semibold"></span>
+        </div>
+      </div>
+      <div id="detailNoteWrap" class="hidden">
+        <div class="text-xs font-semibold text-gray-600 mb-1">Note</div>
+        <div id="detailNote" class="text-xs text-gray-600 bg-yellow-50 border border-yellow-200 rounded p-2 leading-relaxed"></div>
+      </div>
+      <div id="detailMaWrap">
+        <div class="text-xs text-gray-400">MA Logic Validated: <span id="detailMa" class="font-semibold"></span></div>
+      </div>
+      <!-- PDF viewer -->
+      <div id="pdfViewerWrap" class="hidden mt-2">
+        <div class="text-xs font-semibold text-gray-600 mb-1">Reference Guidelines</div>
+        <div id="pdfViewerLinks" class="space-y-1"></div>
+        <iframe id="pdfFrame" class="w-full mt-2 rounded border" style="height:300px"></iframe>
+      </div>
+    </div>
+  </div>
+
+</div>
+
+<script>
+// ─── STATE ───────────────────────────────────────────────────────────────────
+let engineFn = null;       // loaded assessment function
+let engineLabel = 'Bundled fallback (Helix cancerEligibilityEngine)';
+let testCases = [];        // parsed from XLSX
+let criteriaMap = {};      // parsed from criteria XLSX
+let allResults = [];       // full evaluation results
+let filteredResults = [];  // after filters
+let uploadedPDFs = [];     // { name, url }
+let guidelineRefs = [];   // { name, type: 'pdf'|'text', url? }
+
+// ─── UTILITY ─────────────────────────────────────────────────────────────────
+function log(msg, type='info') {
+  const el = document.getElementById('runLog');
+  const colors = { info:'text-gray-500', ok:'text-green-600', warn:'text-yellow-600', err:'text-red-500' };
+  el.innerHTML += `<div class="log-line ${colors[type]}">${msg}</div>`;
+  el.scrollTop = el.scrollHeight;
+}
+
+function badge(text) {
+  const t = (text||'').toUpperCase().replace('_',' ');
+  const cls = t.includes('ELIGIBLE') && !t.includes('IN') ? 'badge-eligible'
+            : t === 'INELIGIBLE' ? 'badge-ineligible'
+            : t.includes('REVIEW') ? 'badge-review'
+            : t === 'YES' ? 'badge-yes'
+            : t === 'NO' ? 'badge-no' : 'badge-na';
+  return `<span class="badge ${cls} px-1.5 py-0.5 rounded text-xs font-semibold">${text||'—'}</span>`;
+}
+
+// ─── GITHUB FETCHER ───────────────────────────────────────────────────────────
+async function fetchEngine() {
+  const repoUrl = document.getElementById('repoUrl').value.trim();
+  const token   = document.getElementById('ghToken').value.trim();
+  const path    = document.getElementById('enginePath').value.trim();
+
+  if (!repoUrl) { alert('Enter a GitHub repo URL first.'); return; }
+
+  // parse org/repo
+  const m = repoUrl.match(/github\.com[:/]([^/]+\/[^/]+?)(?:\.git)?$/);
+  if (!m) { alert('Could not parse GitHub repo URL.'); return; }
+  const repo = m[1];
+
+  const status = document.getElementById('engineStatus');
+  status.textContent = 'Fetching…';
+
+  const headers = { 'Accept': 'application/vnd.github.v3+json' };
+  if (token) headers['Authorization'] = `token ${token}`;
+
+  async function fetchFile(p) {
+    const url = `https://api.github.com/repos/${repo}/contents/${p}`;
+    const r = await fetch(url, { headers });
+    if (!r.ok) throw new Error(`${r.status} fetching ${p}`);
+    const json = await r.json();
+    return atob(json.content.replace(/\n/g,''));
+  }
+
+  try {
+    const engineTs = await fetchFile(path);
+    log(`Fetched ${path} (${Math.round(engineTs.length/1024)}KB)`, 'ok');
+
+    // Try to also fetch helpers
+    let extraTs = '';
+    for (const extra of ['src/features/survey/screeningTypes.ts','src/features/survey/cancerSearchData.ts']) {
+      try { extraTs += '\n' + await fetchFile(extra); } catch(e) { /* optional */ }
+    }
+
+    const js = tsToJs(extraTs + '\n' + engineTs);
+    loadCustomEngine(js, repo + '/' + path);
+  } catch(e) {
+    status.textContent = `Error: ${e.message}. Using bundled engine.`;
+    status.classList.add('text-red-500');
+    log('GitHub fetch failed: ' + e.message, 'err');
+  }
+}
+
+// ─── TYPESCRIPT → JAVASCRIPT ──────────────────────────────────────────────────
+function tsToJs(ts) {
+  let s = ts;
+  // Remove import lines
+  s = s.replace(/^import\s+type\s+\{[^}]*\}\s+from\s+['"][^'"]+['"]\s*;?\s*$/gm, '');
+  s = s.replace(/^import\s+\{[^}]*\}\s+from\s+['"][^'"]+['"]\s*;?\s*$/gm, '');
+  s = s.replace(/^import\s+.*?from\s+['"][^'"]+['"]\s*;?\s*$/gm, '');
+  // Remove export interface / export type blocks
+  s = s.replace(/export\s+interface\s+\w+[\s\S]*?\n\}/gm, '');
+  s = s.replace(/^export\s+type\s+\w+\s*=.*?;?\s*$/gm, '');
+  // Strip generic type params from function declarations: function foo<T, U>(
+  s = s.replace(/function\s+(\w+)\s*<[^>]*>\s*\(/g, 'function $1(');
+  // Strip return type annotations: ): ReturnType {
+  s = s.replace(/\)\s*:\s*[\w<>\[\]{},\s|&?]+\s*\{/g, ') {');
+  // Strip parameter types: (x: string, y: number)
+  s = s.replace(/(\w+)\s*\??\s*:\s*[\w<>\[\]{},\s|&?.]+(?=[,)])/g, '$1');
+  // Strip variable type annotations: const x: Type = or let x: Type =
+  s = s.replace(/(const|let|var)\s+(\w+)\s*:\s*[\w<>\[\]{},\s|&?.]+\s*=/g, '$1 $2 =');
+  // Strip generic instantiation: new Set<string>() → new Set()
+  s = s.replace(/new\s+(\w+)<[^>]*>\s*\(/g, 'new $1(');
+  // Strip type assertions: x as string → x
+  s = s.replace(/\s+as\s+[\w<>\[\]|&?\s]+/g, '');
+  // Strip non-null assertions
+  s = s.replace(/(\w+)!/g, '$1');
+  // Fix export const/function
+  s = s.replace(/^export\s+(const|let|function|class)/gm, '$1');
+  return s;
+}
+
+function loadCustomEngine(jsCode, label) {
+  try {
+    // Inject constants needed by engine
+    const wrapper = `
+      (function(){
+        const ASSESSMENT_OUTCOME_ELIGIBLE = 'ELIGIBLE';
+        const ASSESSMENT_OUTCOME_INELIGIBLE = 'INELIGIBLE';
+        const ASSESSMENT_OUTCOME_REQUIRES_REVIEW = 'REQUIRES_REVIEW';
+        const RESPONSE_YES = 'Yes';
+        ${jsCode}
+        // Expose the main function
+        if (typeof assessCancerEligibility === 'function') {
+          window._customEngine = assessCancerEligibility;
+        }
+      })();
+    `;
+    eval(wrapper);
+    if (window._customEngine) {
+      engineFn = (sc, ph, fh) => window._customEngine(sc, ph, fh, {});
+      engineLabel = label;
+      document.getElementById('engineStatus').textContent = '✓ Loaded: ' + label;
+      document.getElementById('engineStatus').className = 'mt-2 text-xs text-green-600';
+      log('Custom engine loaded from: ' + label, 'ok');
+    } else {
+      throw new Error('assessCancerEligibility not found in fetched code');
+    }
+  } catch(e) {
+    document.getElementById('engineStatus').textContent = 'Parse error — using bundled. (' + e.message + ')';
+    log('Engine parse error: ' + e.message, 'err');
+    engineFn = null;
+  }
+}
+
+// ─── XLSX PARSER ─────────────────────────────────────────────────────────────
+document.getElementById('testCasesFile').addEventListener('change', function(e) {
+  const file = e.target.files[0];
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = function(ev) {
+    const wb = XLSX.read(ev.target.result, {type:'array'});
+    const ws = wb.Sheets[wb.SheetNames[0]];
+    const data = XLSX.utils.sheet_to_json(ws, {header:1});
+    testCases = [];
+    for (let i = 1; i < data.length; i++) {
+      const r = data[i];
+      if (!r[0] || !String(r[0]).trim()) continue;
+      testCases.push({
+        scenarioId:     String(r[0]||'').trim(),
+        description:    String(r[1]||'').trim(),
+        ruleCategory:   String(r[2]||'').trim(),
+        intendedOutcome:String(r[3]||'').trim(),
+        maValid:        String(r[4]||'').trim(),
+        notes:          String(r[7]||'').trim(),
+      });
+    }
+    document.getElementById('testCasesStatus').textContent = `✓ ${testCases.length} cases loaded`;
+    log(`Test cases: ${testCases.length} rows loaded`, 'ok');
+  };
+  reader.readAsArrayBuffer(file);
+});
+
+document.getElementById('criteriaFile').addEventListener('change', function(e) {
+  const file = e.target.files[0];
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = function(ev) {
+    const wb = XLSX.read(ev.target.result, {type:'array'});
+    const ws = wb.Sheets[wb.SheetNames[0]];
+    const data = XLSX.utils.sheet_to_json(ws, {header:1});
+    criteriaMap = {};
+    let count = 0;
+    for (let i = 1; i < data.length; i++) {
+      const r = data[i];
+      if (!r[0]) continue;
+      const key = String(r[0]).toLowerCase().trim();
+      criteriaMap[key] = {
+        condition: String(r[0]||''),
+        outcome:   String(r[27]||''),
+        nccnRef:   String(r[28]||''),
+        excerpt:   String(r[29]||''),
+      };
+      count++;
+    }
+    document.getElementById('criteriaStatus').textContent = `✓ ${count} criteria rows loaded`;
+    log(`Criteria: ${count} rows loaded`, 'ok');
+  };
+  reader.readAsArrayBuffer(file);
+});
+
+document.getElementById('pdfFiles').addEventListener('change', function(e) {
+  uploadedPDFs = [];
+  // Remove previous pdf-type entries from guidelineRefs
+  guidelineRefs = guidelineRefs.filter(r => r.type !== 'pdf');
+  for (const file of e.target.files) {
+    const url = URL.createObjectURL(file);
+    uploadedPDFs.push({ name: file.name, url });
+    guidelineRefs.push({ name: file.name, type: 'pdf', url });
+  }
+  renderGuidelineList();
+});
+
+function addGuidelineRef() {
+  const inp = document.getElementById('guidelineText');
+  const name = inp.value.trim();
+  if (!name) return;
+  guidelineRefs.push({ name, type: 'text' });
+  inp.value = '';
+  renderGuidelineList();
+}
+
+function removeGuidelineRef(idx) {
+  const ref = guidelineRefs[idx];
+  if (ref.type === 'pdf') {
+    uploadedPDFs = uploadedPDFs.filter(p => p.name !== ref.name);
+  }
+  guidelineRefs.splice(idx, 1);
+  renderGuidelineList();
+}
+
+function renderGuidelineList() {
+  const el = document.getElementById('guidelineList');
+  el.innerHTML = guidelineRefs.map((r, i) => {
+    const icon = r.type === 'pdf' ? '📄' : '📋';
+    const clickable = r.type === 'pdf'
+      ? `onclick="document.getElementById('pdfFrame').src='${r.url}';document.getElementById('pdfViewerWrap').classList.remove('hidden')" class="cursor-pointer text-blue-600 hover:underline"`
+      : `class="text-purple-700"`;
+    return `<div class="flex items-center gap-1">
+      <span ${clickable}>${icon} ${r.name}</span>
+      <button onclick="removeGuidelineRef(${i})" class="ml-auto text-gray-300 hover:text-red-400 text-xs leading-none">✕</button>
+    </div>`;
+  }).join('');
+}
+
+// ─── BUNDLED ENGINE (Helix cancerEligibilityEngine JS port) ──────────────────
+const RELATIONSHIPS = {
+  'Mother':                    {degree:1,side:'Maternal'},
+  'Father':                    {degree:1,side:'Paternal'},
+  'Sister':                    {degree:1,side:'Unknown'},
+  'Brother':                   {degree:1,side:'Unknown'},
+  'Daughter':                  {degree:1,side:'Unknown'},
+  'Son':                       {degree:1,side:'Unknown'},
+  'Grandmother (Maternal)':    {degree:2,side:'Maternal'},
+  'Grandmother (Paternal)':    {degree:2,side:'Paternal'},
+  'Grandfather (Maternal)':    {degree:2,side:'Maternal'},
+  'Grandfather (Paternal)':    {degree:2,side:'Paternal'},
+  'Aunt (Maternal)':           {degree:2,side:'Maternal'},
+  'Uncle (Maternal)':          {degree:2,side:'Maternal'},
+  'Aunt (Paternal)':           {degree:2,side:'Paternal'},
+  'Uncle (Paternal)':          {degree:2,side:'Paternal'},
+  'Niece':                     {degree:2,side:'Unknown'},
+  'Nephew':                    {degree:2,side:'Unknown'},
+  'Grandchild':                {degree:2,side:'Unknown'},
+  'Half-Sibling (Maternal)':   {degree:2,side:'Maternal'},
+  'Half-Sibling (Paternal)':   {degree:2,side:'Paternal'},
+  'First Cousin (Maternal)':   {degree:3,side:'Maternal'},
+  'First Cousin (Paternal)':   {degree:3,side:'Paternal'},
+};
+const LS_IDS       = new Set(['colorectal','endometrial','gastric','diffuse_gastric','ovarian','pancreatic','urothelial','brain','cns_tumor','biliary_tract','small_intestine','sebaceous','keratoacanthoma']);
+const HBOC_IDS     = new Set(['breast','tnbc','lobular_breast','male_breast','multiple_primary_breast','ovarian','fallopian_tube','peritoneal','pancreatic','metastatic_prostate']);
+const BP_IDS       = new Set(['breast','male_breast','tnbc','lobular_breast','multiple_primary_breast','metastatic_prostate','prostate']);
+const LFS_IDS      = new Set(['soft_tissue_sarcoma','osteosarcoma','brain','cns_tumor','meningioma','choroid_plexus','adrenocortical','breast','tnbc','lobular_breast','multiple_primary_breast','rhabdomyo']);
+const MEN1_IDS     = new Set(['phpt','multigland_hyperplasia','duodenal_net','gastrinoma','pituitary_adenoma','foregut_carcinoid']);
+const HEMA_IDS     = new Set(['aml','mds','acute_leukemia','bone_marrow_failure']);
+
+function getDeg(rel) { const d=RELATIONSHIPS[rel]; return d&&d.degree<=3?d.degree:0; }
+function getSide(rel) { return (RELATIONSHIPS[rel]||{}).side||'Unknown'; }
+function isPH(ph, id, maxAge=Infinity) {
+  const e=ph[id]; if(!e||!e.checked) return false;
+  if(maxAge===Infinity) return true;
+  const a=parseFloat(String(e.age||'')); return isFinite(a)&&a<maxAge;
+}
+
+function bundledAssess(sc, ph, fh) {
+  if(sc.q1_prior_testing==='Yes') return 'REQUIRES_REVIEW';
+  if(sc.q2_known_mutation==='Yes') return 'REQUIRES_REVIEW';
+  const p = evalPH(sc, ph);
+  if(p.early) return 'REQUIRES_REVIEW';
+  const f = evalFH(fh);
+  const ash = sc.q6_ancestry==='Yes';
+  const checks = [standaloneP(p), standaloneF(f), ashkCheck(p,f,ph,ash),
+    hbocCombo(p,f), lynchCombo(p,f), lfsCheck(p,f), renalCheck(p,f,ph),
+    melCheck(p,f), men1Check(p,f), hemaReview(f), otherReview(p)];
+  if(checks.some(c=>c.e)) return 'ELIGIBLE';
+  if(checks.some(c=>c.r)) return 'REQUIRES_REVIEW';
+  return 'INELIGIBLE';
+}
+
+function evalPH(sc, ph) {
+  const p={};
+  const hasAny = Object.values(ph).some(e=>e&&e.checked);
+  if(sc.q3_personal_history==='Yes'||hasAny){
+    p.breastLE50    = isPH(ph,'breast',51);
+    p.breast5165    = (()=>{ const e=ph.breast; if(!e||!e.checked) return false; const a=parseFloat(e.age); return isFinite(a)&&a>=51&&a<=65; })();
+    p.maleBreast    = isPH(ph,'male_breast');
+    p.tnbc          = isPH(ph,'tnbc');
+    p.lobular       = isPH(ph,'lobular_breast');
+    p.multiBreast   = isPH(ph,'multiple_primary_breast');
+    p.ovarian       = ['ovarian','fallopian_tube','peritoneal','sex_cord_tumor','small_cell_ovary'].some(c=>isPH(ph,c));
+    p.pancreatic    = isPH(ph,'pancreatic');
+    p.metaProstate  = isPH(ph,'metastatic_prostate');
+    p.prostatePH    = p.metaProstate||isPH(ph,'prostate');
+    p.prostLE55     = !p.metaProstate&&isPH(ph,'prostate',56);
+    p.intraductal   = isPH(ph,'prostate_intraductal');
+    p.lsAnyPH       = Object.entries(ph).some(([id,e])=>e.checked&&LS_IDS.has(id));
+    p.lsLT50        = Object.entries(ph).some(([id,e])=>e.checked&&LS_IDS.has(id)&&isFinite(parseFloat(e.age))&&parseFloat(e.age)<50);
+    p.diffGastric   = isPH(ph,'diffuse_gastric');
+    p.gastricGE50   = (()=>{ const e=ph.gastric; if(!e||!e.checked) return false; const a=parseFloat(e.age); return !isFinite(a)||a>=50; })();
+    p.accCpc        = isPH(ph,'adrenocortical')||isPH(ph,'choroid_plexus');
+    p.pheo          = isPH(ph,'pheo_para');
+    p.medThyroid    = isPH(ph,'medullary_thyroid');
+    p.sarcomaLT46   = isPH(ph,'soft_tissue_sarcoma',46)||isPH(ph,'osteosarcoma',46);
+    p.rhabdomyo     = isPH(ph,'rhabdomyo');
+    p.renalLE46     = isPH(ph,'renal_cell',47);
+    p.renalBilat    = isPH(ph,'renal_cell_bilateral');
+    p.multiLS       = Object.entries(ph).filter(([id,e])=>e.checked&&LS_IDS.has(id)).length>=2;
+    p.phptLT30      = (()=>{ const e=ph.phpt; if(!e||!e.checked) return false; const a=parseFloat(e.age); return isFinite(a)&&a<30; })();
+    p.phptGE30      = (()=>{ const e=ph.phpt; if(!e||!e.checked) return false; const a=parseFloat(e.age); return isFinite(a)&&a>=30; })();
+    p.multigland    = isPH(ph,'multigland_hyperplasia');
+    p.brrs          = isPH(ph,'brrs');
+    p.chrpe         = isPH(ph,'chrpe');
+    p.hypoALL       = isPH(ph,'hypodiploid_all');
+    p.melanomaPH    = isPH(ph,'melanoma');
+    p.twoMel        = isPH(ph,'multiple_melanoma')||(isPH(ph,'melanoma')&&(ph.melanoma.count||1)>=2);
+    p.mesothUveal   = isPH(ph,'mesothelioma')||isPH(ph,'uveal_melanoma')||isPH(ph,'ocular_melanoma');
+    p.breastAny     = isPH(ph,'breast')||p.maleBreast||p.tnbc||p.lobular||p.multiBreast;
+    p.stic          = isPH(ph,'stic');
+    p.papThyroid    = isPH(ph,'papillary_thyroid');
+    p.duoNET        = isPH(ph,'duodenal_net')||isPH(ph,'gastrinoma');
+    p.pitAd         = isPH(ph,'pituitary_adenoma');
+    p.foregut       = isPH(ph,'foregut_carcinoid');
+    p.cnsTumorLT46  = isPH(ph,'brain',46)||isPH(ph,'cns_tumor',46)||isPH(ph,'meningioma',46);
+    // LFS multiple primaries
+    const lft=new Set();
+    if(p.sarcomaLT46||isPH(ph,'soft_tissue_sarcoma')||isPH(ph,'osteosarcoma')) lft.add('s');
+    if(p.rhabdomyo) lft.add('r');
+    if(p.accCpc) lft.add('a');
+    if(p.cnsTumorLT46||isPH(ph,'brain')||isPH(ph,'cns_tumor')||isPH(ph,'meningioma')) lft.add('c');
+    if(isPH(ph,'breast')) lft.add('b');
+    p.multiLFS = lft.size>=2&&(p.sarcomaLT46||p.cnsTumorLT46||isPH(ph,'breast',46)||isPH(ph,'adrenocortical',46)||isPH(ph,'choroid_plexus',46)||isPH(ph,'rhabdomyo',46));
+    // Hematologic
+    if(isPH(ph,'aml',51)||isPH(ph,'mds',51)) { p.myeloidLT50=true; p.early=true; }
+    if(!p.myeloidLT50&&isPH(ph,'acute_leukemia',50)) { p.myeloidLT50=true; p.early=true; }
+    if(!p.myeloidLT50&&isPH(ph,'bone_marrow_failure')) { p.bmf=true; p.early=true; }
+  }
+  // Q4 polyps
+  if(sc.q4_colon_polyps==='Yes'){
+    if(sc.q4_1_polyp_count==='10+') p.highPolyps=true;
+    if(sc.q4_2_hamartomatous_polyps==='Yes') p.hamPolyps=true;
+    if(sc.q4_3_juvenile_polyps==='Yes') p.juvPolyps=true;
+    if(sc.q4_4_serrated_polyps==='Yes') p.serrPolyps=true;
+  }
+  if(isPH(ph,'serrated_polyposis')) p.serrPolyps=true;
+  return p;
+}
+
+function evalFH(fh) {
+  const f={};
+  if(!fh||!fh.length) return f;
+  let ls=0,lsLT50=0,hboc=0,mb=0,pb=0,ub=0,mr=0,pr=0,ur=0,gc=0,glt50=0,dgc=false,mh=0,ph=0,uh=0;
+  for(const e of fh){
+    const id=e.conditionId; if(!id) continue;
+    const deg=getDeg(e.relationship), side=getSide(e.relationship);
+    const age=parseFloat(String(e.age||'')); const hasAge=isFinite(age);
+    const is12=deg===1||deg===2, is1=deg===1;
+    if(BP_IDS.has(id)){ if(side==='Maternal')mb++; else if(side==='Paternal')pb++; else ub++; }
+    if(LS_IDS.has(id)&&is12){ ls++; if(hasAge&&age<50) lsLT50++; }
+    if(HBOC_IDS.has(id)&&is12) hboc++;
+    if((id==='renal_cell'||id==='renal_cell_bilateral')&&is12){ if(side==='Maternal')mr++; else if(side==='Paternal')pr++; else ur++; }
+    if((id==='gastric'||id==='diffuse_gastric')&&is12){ gc++; if(hasAge&&age<=50)glt50++; if(id==='diffuse_gastric')dgc=true; }
+    if(HEMA_IDS.has(id)){ if(side==='Maternal')mh++; else if(side==='Paternal')ph++; else uh++; }
+    if(id==='breast'&&is12){ f.breastFHAny=true; if(hasAge&&age<=50)f.breastFHLE50=true; }
+    if(id==='lobular_breast'&&is12) f.lobularFH=true;
+    if(id==='multiple_primary_breast'&&is12) f.multiBrFH=true;
+    if(id==='tnbc'&&is12) f.tnbcFH=true;
+    if(id==='male_breast'&&is12) f.maleBrFH=true;
+    if((id==='ovarian'||id==='fallopian_tube'||id==='peritoneal')&&is12) f.ovarianFH=true;
+    if(id==='pancreatic'&&is12) f.pancFH=true;
+    if(id==='metastatic_prostate'&&is12) f.metaProsFH=true;
+    if(id==='colorectal'&&is1&&hasAge&&age<50) f.colorectalLT50=true;
+    if(id==='endometrial'&&is1&&hasAge&&age<50) f.endoLT50=true;
+    if(id==='diffuse_gastric'&&is12) f.diffGastricFH=true;
+    if(id==='medullary_thyroid') f.medThyFH=true;
+    if((id==='adrenocortical'||id==='choroid_plexus')&&is1) f.accCpcFH=true;
+    if(id==='pheo_para'&&is1) f.pheoFH=true;
+    if((id==='soft_tissue_sarcoma'||id==='osteosarcoma')&&is12&&hasAge&&age<46) f.sarcomaFHLT46=true;
+    if(LFS_IDS.has(id)&&is12&&hasAge&&age<56) f.lfsFHLT56=true;
+    if((id==='renal_cell'||id==='renal_cell_bilateral')&&is12) f.renalFH=true;
+    if(id==='mesothelioma'||id==='uveal_melanoma'||id==='ocular_melanoma') f.mesothUvealFH=true;
+    if(id==='melanoma'&&is12) f.melanomaFH=true;
+    if(id==='hypodiploid_all') f.hypoALLFH=true;
+    if(MEN1_IDS.has(id)) f.men1FH=true;
+    if(HEMA_IDS.has(id)&&is12){ f.hemaFH=true; if(hasAge&&age<=50)f.hemaFHLE50=true; }
+    if((id==='aml'||id==='mds')&&is1&&hasAge&&age<=50) f.amlMds1stLE50=true;
+  }
+  if(lsLT50>=1) f.lsFHLT50=true;
+  if(ls>=2) f.ls2AnyAge=true;
+  if(ls>=2&&lsLT50>=1) f.lsCombo=true;
+  if(ls>=3) f.ls3Plus=true;
+  if(hboc>=3) f.hboc3=true;
+  if(mb+ub>=2||pb+ub>=2) f.bp2SameSide=true;
+  if(mr+ur>=2||pr+ur>=2) f.renal2SameSide=true;
+  if(gc>=2&&(glt50>=1||dgc)) f.gastricCombo=true;
+  if(mh+uh>=2||ph+uh>=2) f.hema2SameSide=true;
+  return f;
+}
+
+function standaloneP(p){ return {e:!!(p.breastLE50||p.maleBreast||p.tnbc||p.ovarian||p.pancreatic||p.metaProstate||p.lsLT50||p.diffGastric||p.accCpc||p.pheo||p.medThyroid||p.sarcomaLT46||p.rhabdomyo||p.renalLE46||p.renalBilat||p.multiLS||p.multiBreast||p.highPolyps||p.hamPolyps||p.juvPolyps||p.serrPolyps||p.phptLT30||p.multigland||p.brrs||p.chrpe||p.hypoALL||p.twoMel||p.multiLFS),r:false}; }
+function standaloneF(f){ return {e:!!(f.breastFHLE50||f.maleBrFH||f.ovarianFH||f.pancFH||f.metaProsFH||f.colorectalLT50||f.endoLT50||f.lsCombo||f.ls3Plus||f.gastricCombo||f.medThyFH||f.accCpcFH||f.pheoFH||f.tnbcFH||f.multiBrFH||f.hboc3||f.renal2SameSide||f.hypoALLFH),r:false}; }
+function ashkCheck(p,f,ph,ash){ return {e:!!(ash&&(isPH(ph,'breast')||(!p.metaProstate&&p.prostatePH)||f.breastFHAny)),r:false}; }
+function hbocCombo(p,f){ const ld=p.lobular&&(p.diffGastric||f.diffGastricFH); const hbp=p.breastLE50||p.breast5165||p.maleBreast||p.tnbc||p.lobular||p.multiBreast||p.prostatePH; return {e:!!(ld||(hbp&&f.bp2SameSide)||(p.breastAny&&f.bp2SameSide)),r:false}; }
+function lynchCombo(p,f){ return {e:!!(p.lsAnyPH&&(f.lsFHLT50||f.ls2AnyAge)),r:false}; }
+function lfsCheck(p,f){ const t=p.sarcomaLT46||p.cnsTumorLT46; return {e:!!(t&&(f.sarcomaFHLT46||f.lfsFHLT56)),r:false}; }
+function renalCheck(p,f,ph){ const rph=p.renalLE46||p.renalBilat||isPH(ph,'renal_cell'); return {e:!!(rph&&(f.renalFH||(p.mesothUveal||f.mesothUvealFH))),r:false}; }
+function melCheck(p,f){ return {e:!!(p.twoMel&&(f.melanomaFH||f.breastFHAny)),r:false}; }
+function men1Check(p,f){ const cnt=[p.phptLT30||p.phptGE30||p.multigland,p.duoNET,p.pitAd,p.foregut].filter(Boolean).length; return {e:false,r:cnt>=2||(cnt>=1&&f.men1FH)}; }
+function hemaReview(f){ return {e:false,r:!!(f.hemaFHLE50||f.amlMds1stLE50||f.hema2SameSide)}; }
+function otherReview(p){ return {e:false,r:!!(p.breast5165||p.prostLE55||p.intraductal||p.phptGE30||p.gastricGE50||p.stic||p.papThyroid||p.duoNET||p.pitAd)}; }
+
+// ─── SCENARIO CASE DEFINITIONS ────────────────────────────────────────────────
+const DEF = (function(){
+  const N='No',Y='Yes';
+  function sc(o={}){ return Object.assign({q1_prior_testing:N,q2_known_mutation:N,q3_personal_history:N,q4_colon_polyps:N,q4_1_polyp_count:'',q4_2_hamartomatous_polyps:N,q4_3_juvenile_polyps:N,q4_4_serrated_polyps:N,q5_family_history:N,q6_ancestry:N},o); }
+  function ph(o={}){ const r={}; for(const[k,v] of Object.entries(o)) r[k]={checked:true,age:v===''?'':String(v)}; return r; }
+  function fh(...a){ return a.map(([c,r,ag])=>({conditionId:c,relationship:r,age:ag===''?'':String(ag)})); }
+  return {
+    q1_prior_testing_YES:[sc({q1_prior_testing:Y}),ph(),fh()],
+    q2_known_mutation_YES:[sc({q2_known_mutation:Y}),ph(),fh()],
+    q3_aml_lt50:[sc({q3_personal_history:Y}),ph({aml:45}),fh()],
+    q3_mds_lt50:[sc({q3_personal_history:Y}),ph({mds:45}),fh()],
+    q3_acute_leukemia_lt50:[sc({q3_personal_history:Y}),ph({acute_leukemia:45}),fh()],
+    q3_bone_marrow_failure:[sc({q3_personal_history:Y}),ph({bone_marrow_failure:''}),fh()],
+    q3_breast_le50:[sc({q3_personal_history:Y}),ph({breast:50}),fh()],
+    q3_male_breast:[sc({q3_personal_history:Y}),ph({male_breast:70}),fh()],
+    q3_tnbc:[sc({q3_personal_history:Y}),ph({tnbc:''}),fh()],
+    q3_ovarian:[sc({q3_personal_history:Y}),ph({ovarian:''}),fh()],
+    q3_fallopian_tube:[sc({q3_personal_history:Y}),ph({fallopian_tube:''}),fh()],
+    q3_peritoneal:[sc({q3_personal_history:Y}),ph({peritoneal:''}),fh()],
+    q3_pancreatic:[sc({q3_personal_history:Y}),ph({pancreatic:''}),fh()],
+    q3_metastatic_prostate:[sc({q3_personal_history:Y}),ph({metastatic_prostate:''}),fh()],
+    q3_multiple_primary_breast:[sc({q3_personal_history:Y}),ph({multiple_primary_breast:''}),fh()],
+    q3_colorectal_lt50:[sc({q3_personal_history:Y}),ph({colorectal:45}),fh()],
+    q3_endometrial_lt50:[sc({q3_personal_history:Y}),ph({endometrial:45}),fh()],
+    q3_gastric_lt50:[sc({q3_personal_history:Y}),ph({gastric:45}),fh()],
+    q3_urothelial_lt50:[sc({q3_personal_history:Y}),ph({urothelial:45}),fh()],
+    q3_brain_cns_lt50:[sc({q3_personal_history:Y}),ph({brain:45}),fh()],
+    q3_biliary_lt50:[sc({q3_personal_history:Y}),ph({biliary_tract:45}),fh()],
+    q3_small_intestine_lt50:[sc({q3_personal_history:Y}),ph({small_intestine:45}),fh()],
+    q3_sebaceous_lt50:[sc({q3_personal_history:Y}),ph({sebaceous:45}),fh()],
+    q3_keratoacanthoma_lt50:[sc({q3_personal_history:Y}),ph({keratoacanthoma:45}),fh()],
+    q3_multiple_ls_cancers:[sc({q3_personal_history:Y}),ph({colorectal:55,endometrial:60}),fh()],
+    q3_diffuse_gastric:[sc({q3_personal_history:Y}),ph({diffuse_gastric:''}),fh()],
+    q3_acc_cpc:[sc({q3_personal_history:Y}),ph({adrenocortical:''}),fh()],
+    q3_sarcoma_lt45:[sc({q3_personal_history:Y}),ph({soft_tissue_sarcoma:40}),fh()],
+    q3_rhabdomyo:[sc({q3_personal_history:Y}),ph({rhabdomyo:''}),fh()],
+    q3_hypodiploid_all:[sc({q3_personal_history:Y}),ph({hypodiploid_all:''}),fh()],
+    q3_multiple_lfs_tumors_lt46:[sc({q3_personal_history:Y}),ph({soft_tissue_sarcoma:40,adrenocortical:42}),fh()],
+    q3_pheo_para:[sc({q3_personal_history:Y}),ph({pheo_para:''}),fh()],
+    q3_medullary_thyroid:[sc({q3_personal_history:Y}),ph({medullary_thyroid:''}),fh()],
+    q3_renal_le46:[sc({q3_personal_history:Y}),ph({renal_cell:46}),fh()],
+    q3_renal_bilateral_multifocal:[sc({q3_personal_history:Y}),ph({renal_cell_bilateral:''}),fh()],
+    q4_1_polyp_count_10plus:[sc({q4_colon_polyps:Y,q4_1_polyp_count:'10+'}),ph(),fh()],
+    q4_2_hamartomatous_YES:[sc({q4_colon_polyps:Y,q4_2_hamartomatous_polyps:Y}),ph(),fh()],
+    q4_3_juvenile_YES:[sc({q4_colon_polyps:Y,q4_3_juvenile_polyps:Y}),ph(),fh()],
+    q4_4_serrated_YES:[sc({q4_colon_polyps:Y,q4_4_serrated_polyps:Y}),ph(),fh()],
+    q3_serrated_polyposis_syndrome:[sc({q3_personal_history:Y}),ph({serrated_polyposis:''}),fh()],
+    q3_phpt_lt30:[sc({q3_personal_history:Y}),ph({phpt:25}),fh()],
+    q3_multigland_hyperplasia:[sc({q3_personal_history:Y}),ph({multigland_hyperplasia:''}),fh()],
+    q3_brrs:[sc({q3_personal_history:Y}),ph({brrs:''}),fh()],
+    q3_chrpe:[sc({q3_personal_history:Y}),ph({chrpe:''}),fh()],
+    q3_two_melanomas:[sc({q3_personal_history:Y}),ph({multiple_melanoma:''}),fh()],
+    q6_ancestry_YES_q3_breast:[sc({q3_personal_history:Y,q6_ancestry:Y}),ph({breast:60}),fh()],
+    q6_ancestry_YES_q3_prostate:[sc({q3_personal_history:Y,q6_ancestry:Y}),ph({prostate:65}),fh()],
+    q6_ancestry_YES_q5_breast_fh:[sc({q5_family_history:Y,q6_ancestry:Y}),ph(),fh(['breast','Mother',75])],
+    q3_lobular_breast_q3_diffuse_gastric:[sc({q3_personal_history:Y}),ph({lobular_breast:'',diffuse_gastric:''}),fh()],
+    q3_lobular_breast_q5_diffuse_gastric_fh:[sc({q3_personal_history:Y,q5_family_history:Y}),ph({lobular_breast:''}),fh(['diffuse_gastric','Grandmother (Maternal)',60])],
+    q3_sarcoma_cns_lt46_q5_lfs_lt56:[sc({q3_personal_history:Y,q5_family_history:Y}),ph({soft_tissue_sarcoma:40}),fh(['breast','Mother',50])],
+    q3_ls_cancer_q5_ls_fh_lt50:[sc({q3_personal_history:Y,q5_family_history:Y}),ph({colorectal:55}),fh(['endometrial','Mother',45])],
+    q3_ls_cancer_q5_2plus_ls_fh:[sc({q3_personal_history:Y,q5_family_history:Y}),ph({colorectal:55}),fh(['colorectal','Mother',60],['endometrial','Aunt (Maternal)',65])],
+    q3_breast_prostate_q5_2plus_same_side:[sc({q3_personal_history:Y,q5_family_history:Y}),ph({breast:70}),fh(['breast','Mother',65],['prostate','Grandfather (Maternal)',70])],
+    q3_renal_q5_renal_fh:[sc({q3_personal_history:Y,q5_family_history:Y}),ph({renal_cell:''}),fh(['renal_cell','Father',55])],
+    q3_renal_q5_mesothel_uveal:[sc({q3_personal_history:Y,q5_family_history:Y}),ph({renal_cell:''}),fh(['uveal_melanoma','Father',60])],
+    q3_two_melanomas_q5_melanoma_fh:[sc({q3_personal_history:Y,q5_family_history:Y}),ph({multiple_melanoma:''}),fh(['melanoma','Mother',55])],
+    q3_two_melanomas_q5_breast_fh:[sc({q3_personal_history:Y,q5_family_history:Y}),ph({multiple_melanoma:''}),fh(['breast','Mother',70])],
+    q5_breast_fh_le50:[sc({q5_family_history:Y}),ph(),fh(['breast','Mother',50])],
+    q5_male_breast_fh:[sc({q5_family_history:Y}),ph(),fh(['male_breast','Brother',50])],
+    q5_ovarian_fh:[sc({q5_family_history:Y}),ph(),fh(['ovarian','Mother',55])],
+    q5_pancreatic_fh:[sc({q5_family_history:Y}),ph(),fh(['pancreatic','Father',60])],
+    q5_metastatic_prostate_fh:[sc({q5_family_history:Y}),ph(),fh(['metastatic_prostate','Father',65])],
+    q5_tnbc_fh:[sc({q5_family_history:Y}),ph(),fh(['tnbc','Mother',55])],
+    q5_multiple_primary_breast_fh:[sc({q5_family_history:Y}),ph(),fh(['multiple_primary_breast','Mother',60])],
+    q5_3plus_hboc_fh:[sc({q5_family_history:Y}),ph(),fh(['breast','Mother',55],['ovarian','Aunt (Maternal)',60],['pancreatic','Grandmother (Maternal)',65])],
+    q5_colorectal_fh_lt50_1st:[sc({q5_family_history:Y}),ph(),fh(['colorectal','Father',45])],
+    q5_endometrial_fh_lt50_1st:[sc({q5_family_history:Y}),ph(),fh(['endometrial','Mother',45])],
+    q5_ls_2plus_fh_one_lt50:[sc({q5_family_history:Y}),ph(),fh(['colorectal','Mother',45],['endometrial','Aunt (Maternal)',60])],
+    q5_ls_3plus_fh:[sc({q5_family_history:Y}),ph(),fh(['colorectal','Mother',60],['endometrial','Aunt (Maternal)',65],['biliary_tract','Uncle (Maternal)',70])],
+    q5_gastric_combo_fh:[sc({q5_family_history:Y}),ph(),fh(['gastric','Father',60],['gastric','Uncle (Paternal)',40])],
+    q5_medullary_thyroid_fh:[sc({q5_family_history:Y}),ph(),fh(['medullary_thyroid','Father',55])],
+    q5_acc_cpc_fh_1st:[sc({q5_family_history:Y}),ph(),fh(['adrenocortical','Father',50])],
+    q5_pheo_fh:[sc({q5_family_history:Y}),ph(),fh(['pheo_para','Father',50])],
+    q5_2plus_renal_same_side_fh:[sc({q5_family_history:Y}),ph(),fh(['renal_cell','Mother',55],['renal_cell','Aunt (Maternal)',60])],
+    q5_hypodiploid_all_fh:[sc({q5_family_history:Y}),ph(),fh(['hypodiploid_all','Father',''])],
+    q3_aml_age50_plus:[sc({q3_personal_history:Y}),ph({aml:55}),fh()],
+    q3_mds_age50_plus:[sc({q3_personal_history:Y}),ph({mds:55}),fh()],
+    q3_breast_ge66_q5_2plus_same_side:[sc({q3_personal_history:Y,q5_family_history:Y}),ph({breast:70}),fh(['breast','Mother',65],['prostate','Grandfather (Maternal)',70])],
+    q5_aml_mds_1st_degree_le50:[sc({q5_family_history:Y}),ph(),fh(['aml','Father',45])],
+    q3_breast_51_65:[sc({q3_personal_history:Y}),ph({breast:60}),fh()],
+    q3_prostate_le55:[sc({q3_personal_history:Y}),ph({prostate:55}),fh()],
+    q3_prostate_intraductal:[sc({q3_personal_history:Y}),ph({prostate_intraductal:''}),fh()],
+    q3_phpt_ge30:[sc({q3_personal_history:Y}),ph({phpt:40}),fh()],
+    q3_gastric_ge50_or_unknown:[sc({q3_personal_history:Y}),ph({gastric:55}),fh()],
+    q3_stic:[sc({q3_personal_history:Y}),ph({stic:''}),fh()],
+    q3_papillary_thyroid_cmorular:[sc({q3_personal_history:Y}),ph({papillary_thyroid:''}),fh()],
+    q3_duodenal_net:[sc({q3_personal_history:Y}),ph({duodenal_net:''}),fh()],
+    q3_pituitary_adenoma:[sc({q3_personal_history:Y}),ph({pituitary_adenoma:''}),fh()],
+    q3_men1_2plus_ph:[sc({q3_personal_history:Y}),ph({pituitary_adenoma:'',duodenal_net:''}),fh()],
+    q3_foregut_carcinoid_q5_men1_fh:[sc({q3_personal_history:Y,q5_family_history:Y}),ph({foregut_carcinoid:''}),fh(['pituitary_adenoma','Father',50])],
+    q5_acute_leukemia_fh_lt50:[sc({q5_family_history:Y}),ph(),fh(['acute_leukemia','Mother',45])],
+    q5_2plus_hematologic_same_side_fh:[sc({q5_family_history:Y}),ph(),fh(['aml','Mother',45],['mds','Aunt (Maternal)',40])],
+    q3_breast_age66_plus:[sc({q3_personal_history:Y}),ph({breast:70}),fh()],
+    q3_prostate_age56_plus:[sc({q3_personal_history:Y}),ph({prostate:60}),fh()],
+    q3_colorectal_age50:[sc({q3_personal_history:Y}),ph({colorectal:50}),fh()],
+    q3_endometrial_age50:[sc({q3_personal_history:Y}),ph({endometrial:50}),fh()],
+    q3_ls_cancer_no_age:[sc({q3_personal_history:Y}),ph({colorectal:''}),fh()],
+    q3_renal_age47:[sc({q3_personal_history:Y}),ph({renal_cell:47}),fh()],
+    q3_phpt_no_age:[sc({q3_personal_history:Y}),ph({phpt:''}),fh()],
+    q3_sarcoma_age45:[sc({q3_personal_history:Y}),ph({soft_tissue_sarcoma:45}),fh()],
+    q3_lobular_breast_only:[sc({q3_personal_history:Y}),ph({lobular_breast:''}),fh()],
+    q3_single_melanoma:[sc({q3_personal_history:Y}),ph({melanoma:''}),fh()],
+    q3_uveal_melanoma_no_rcc:[sc({q3_personal_history:Y}),ph({uveal_melanoma:''}),fh()],
+    q3_mesothelioma_no_rcc:[sc({q3_personal_history:Y}),ph({mesothelioma:''}),fh()],
+    q3_sex_cord_tumor:[sc({q3_personal_history:Y}),ph({sex_cord_tumor:''}),fh()],
+    q3_small_cell_ovary:[sc({q3_personal_history:Y}),ph({small_cell_ovary:''}),fh()],
+    q3_meningioma:[sc({q3_personal_history:Y}),ph({meningioma:''}),fh()],
+    q3_follicular_thyroid:[sc({q3_personal_history:Y}),ph({follicular_thyroid:''}),fh()],
+    q3_cervical:[sc({q3_personal_history:Y}),ph(),fh()],
+    q3_lung:[sc({q3_personal_history:Y}),ph(),fh()],
+    q3_lymphoma:[sc({q3_personal_history:Y}),ph(),fh()],
+    q3_testicular:[sc({q3_personal_history:Y}),ph(),fh()],
+    q3_cml:[sc({q3_personal_history:Y}),ph(),fh()],
+    q3_all_non_hypodiploid:[sc({q3_personal_history:Y}),ph(),fh()],
+    all_NO:[sc(),ph(),fh()],
+    q5_pituitary_adenoma_fh:[sc({q5_family_history:Y}),ph(),fh(['pituitary_adenoma','Father',50])],
+    q5_phpt_fh:[sc({q5_family_history:Y}),ph(),fh(['phpt','Father',45])],
+    q5_phpt_lt30_fh:[sc({q5_family_history:Y}),ph(),fh(['phpt','Father',25])],
+    q5_multigland_hyperplasia_fh:[sc({q5_family_history:Y}),ph(),fh(['multigland_hyperplasia','Father',50])],
+    q5_duodenal_net_fh:[sc({q5_family_history:Y}),ph(),fh(['duodenal_net','Father',50])],
+    q5_foregut_carcinoid_fh_only:[sc({q5_family_history:Y}),ph(),fh(['foregut_carcinoid','Father',50])],
+    q3_single_melanoma_q5_melanoma_fh_nonskin:[sc({q3_personal_history:Y,q5_family_history:Y}),ph({melanoma:''}),fh(['melanoma','Mother',55])],
+    q3_lfs_lt46_q5_fh_multiple_primaries_ge56:[sc({q3_personal_history:Y,q5_family_history:Y}),ph({soft_tissue_sarcoma:40}),fh(['breast','Mother',60])],
+    q3_cowden_pten_combo:[sc({q3_personal_history:Y}),ph({follicular_thyroid:55,endometrial:55}),fh()],
+  };
+})();
+
+// ─── NCCN NOTES ──────────────────────────────────────────────────────────────
+const NCCN_NOTES = {
+  q5_pituitary_adenoma_fh:'NCCN: FH pituitary adenoma alone should trigger REQUIRES_REVIEW; engine missing FH-only MEN1 rule',
+  q5_phpt_fh:'NCCN: FH PHPT ≥30 alone should trigger REQUIRES_REVIEW; engine missing FH-only MEN1 rule',
+  q5_phpt_lt30_fh:'NCCN: FH parathyroid adenoma <30 → criteria met (ELIGIBLE); engine missing FH-only MEN1 rule',
+  q5_multigland_hyperplasia_fh:'NCCN: FH multigland hyperplasia → criteria met (ELIGIBLE); engine missing FH-only MEN1 rule',
+  q5_duodenal_net_fh:'NCCN: FH duodenal NET/PanNET → REQUIRES_REVIEW; engine missing FH-only MEN1 rule',
+  q5_foregut_carcinoid_fh_only:'NCCN: FH foregut carcinoid → REQUIRES_REVIEW; engine missing FH-only MEN1 rule',
+  q3_single_melanoma_q5_melanoma_fh_nonskin:'NCCN: single melanoma + FH melanoma with ≥2 non-skin cancers → ELIGIBLE; engine requires ≥2 PH melanomas',
+  q3_cowden_pten_combo:'NCCN: Cowden/PTEN (follicular thyroid + endometrial) → REQUIRES_REVIEW; not implemented in engine',
+  q3_meningioma:'NCCN: meningioma is LFS tumor spectrum; should trigger LFS criteria if <46 with qualifying FH',
+};
+const TOOL_CORRECT_NOTES = {
+  q3_sex_cord_tumor:'Tool outcome (ELIGIBLE) is correct per NCCN; test expected INELIGIBLE — sex_cord_tumor routes through ovarian pathway in engine (MA Logic Validated=0)',
+  q3_small_cell_ovary:'Tool outcome (ELIGIBLE) is correct per NCCN; test expected INELIGIBLE — small_cell_ovary routes through ovarian pathway in engine (MA Logic Validated=0)',
+  q3_sarcoma_age45:'Tool outcome (ELIGIBLE) is correct per NCCN (<46 criterion; age 45 qualifies); test expected INELIGIBLE — test data issue (MA Logic Validated=0)',
+  q3_lfs_lt46_q5_fh_multiple_primaries_ge56:'Tool outcome (ELIGIBLE) is correct — sarcoma <46 is standalone eligible; standalone PH criterion applies first (test designed to isolate FH multiple-primaries scenario)',
+};
+
+// ─── SUMMARY GENERATOR ───────────────────────────────────────────────────────
+function generateSummary(results, engLabel) {
+  const total  = results.length;
+  const critOk = results.filter(r=>r.critMatch==='YES').length;
+  const nccnOk = results.filter(r=>r.nccnMatch==='YES').length;
+  const elig   = results.filter(r=>r.toolOutcome==='ELIGIBLE').length;
+  const inel   = results.filter(r=>r.toolOutcome==='INELIGIBLE').length;
+  const rev    = results.filter(r=>r.toolOutcome==='REQUIRES_REVIEW').length;
+  const now    = new Date().toLocaleString();
+
+  let t = `Run date:  ${now}\nEngine:    ${engLabel}\n`;
+
+  if (guidelineRefs.length) {
+    t += `Guidelines validated against (${guidelineRefs.length}):\n`;
+    guidelineRefs.forEach(r => {
+      const tag = r.type === 'pdf' ? ' [PDF]' : ' [reference]';
+      t += `  • ${r.name}${tag}\n`;
+    });
+  } else {
+    t += `Guidelines: none specified\n`;
+  }
+
+  t += `\nCases evaluated:      ${total}\n`;
+  t += `Criteria match:       ${critOk}/${total} (${Math.round(100*critOk/total)}%)\n`;
+  t += `Guidelines consistent:${nccnOk}/${total} (${Math.round(100*nccnOk/total)}%)\n`;
+  t += `Outcomes:             ${elig} ELIGIBLE · ${inel} INELIGIBLE · ${rev} REQUIRES_REVIEW\n`;
+
+  const critFails = results.filter(r=>r.critMatch==='NO');
+  if (critFails.length) {
+    t += `\nCriteria mismatches (${critFails.length}):\n`;
+    critFails.forEach(r => {
+      const note = r.nccnNote ? ` — ${r.nccnNote.split(';')[0]}` : '';
+      t += `  • ${r.scenarioId}: tool=${r.toolOutcome}, expected=${r.intendedOutcome}${note}\n`;
+    });
+  }
+
+  const nccnFails = results.filter(r=>r.nccnMatch==='NO');
+  if (nccnFails.length) {
+    // Group by gap type
+    const gaps = [...new Set(nccnFails.map(r => (NCCN_NOTES[r.scenarioId]||'').split(';')[0].trim()).filter(Boolean))];
+    t += `\nKnown engine gaps vs guidelines (${nccnFails.length} cases, ${gaps.length} distinct gaps):\n`;
+    nccnFails.forEach(r => {
+      const note = NCCN_NOTES[r.scenarioId] || '';
+      t += `  • ${r.scenarioId}: ${note}\n`;
+    });
+  }
+
+  const cats = [...new Set(results.map(r=>r.ruleCategory).filter(Boolean))].sort();
+  if (cats.length) {
+    t += `\nRule categories covered (${cats.length}):\n`;
+    cats.forEach(c => {
+      const n = results.filter(r=>r.ruleCategory===c).length;
+      const ok = results.filter(r=>r.ruleCategory===c&&r.critMatch==='YES').length;
+      t += `  • ${c}: ${ok}/${n} match\n`;
+    });
+  }
+
+  return t;
+}
+
+// ─── SAVE / LOAD ─────────────────────────────────────────────────────────────
+function saveEvaluation() {
+  const defaultName = `Evaluation ${new Date().toLocaleDateString()}`;
+  const name = prompt('Name for this evaluation:', defaultName);
+  if (!name) return;
+  const saved = JSON.parse(localStorage.getItem('eligibility_evaluations') || '[]');
+  saved.unshift({
+    id: Date.now(),
+    name,
+    date: new Date().toLocaleString(),
+    engineLabel,
+    guidelineRefs,
+    summary: document.getElementById('summaryDescText').textContent,
+    results: allResults,
+  });
+  localStorage.setItem('eligibility_evaluations', JSON.stringify(saved));
+  renderSavedList();
+  log('Saved: ' + name, 'ok');
+}
+
+function deleteEvaluation(id) {
+  let saved = JSON.parse(localStorage.getItem('eligibility_evaluations') || '[]');
+  saved = saved.filter(e => e.id !== id);
+  localStorage.setItem('eligibility_evaluations', JSON.stringify(saved));
+  renderSavedList();
+}
+
+function renderSavedList() {
+  const saved = JSON.parse(localStorage.getItem('eligibility_evaluations') || '[]');
+  const el = document.getElementById('savedList');
+  if (!saved.length) {
+    el.innerHTML = '<div class="text-gray-400 italic text-xs">None saved yet</div>';
+    return;
+  }
+  el.innerHTML = saved.map(e => {
+    const short = e.engineLabel.length > 35 ? e.engineLabel.substring(0,35)+'…' : e.engineLabel;
+    const n = e.results ? e.results.length : '?';
+    const critOk = e.results ? e.results.filter(r=>r.critMatch==='YES').length : '?';
+    return `<div class="border border-gray-200 rounded p-2 bg-gray-50 hover:bg-blue-50 cursor-pointer" onclick="restoreEvaluation(${e.id})">
+      <div class="font-semibold text-gray-700 truncate">${e.name}</div>
+      <div class="text-gray-400 mt-0.5">${e.date}</div>
+      <div class="text-gray-500 truncate">${short}</div>
+      <div class="text-gray-500">${n} cases · ${critOk}/${n} criteria</div>
+      <button class="mt-1 text-red-400 hover:text-red-600 text-xs" onclick="event.stopPropagation();deleteEvaluation(${e.id})">✕ Delete</button>
+    </div>`;
+  }).join('');
+}
+
+function restoreEvaluation(id) {
+  const saved = JSON.parse(localStorage.getItem('eligibility_evaluations') || '[]');
+  const entry = saved.find(e => e.id === id);
+  if (!entry) return;
+  allResults = entry.results;
+  filteredResults = allResults;
+  engineLabel = entry.engineLabel;
+  guidelineRefs = entry.guidelineRefs || [];
+  renderGuidelineList();
+  refreshSummaryBar(allResults);
+  document.getElementById('summaryDescText').textContent = entry.summary;
+  document.getElementById('summaryDesc').classList.remove('hidden');
+  document.getElementById('summaryBar').classList.remove('hidden');
+  document.getElementById('filterBar').classList.remove('hidden');
+  document.getElementById('emptyState').classList.add('hidden');
+  document.getElementById('exportBtn').classList.remove('hidden');
+  document.getElementById('saveBtn').classList.remove('hidden');
+  document.getElementById('newBtn').classList.remove('hidden');
+  const cats = [...new Set(allResults.map(r=>r.ruleCategory).filter(Boolean))].sort();
+  const catSel = document.getElementById('filterCategory');
+  catSel.innerHTML = '<option value="">All Categories</option>';
+  cats.forEach(c => { const o=document.createElement('option'); o.value=c; o.textContent=c; catSel.appendChild(o); });
+  renderTable(filteredResults);
+  log('Loaded: ' + entry.name, 'ok');
+}
+
+function newEvaluation() {
+  if (allResults.length && !confirm('Clear current results and start a new evaluation?')) return;
+  allResults = []; filteredResults = []; testCases = []; criteriaMap = {};
+  engineFn = null; engineLabel = 'Bundled fallback (Helix cancerEligibilityEngine)';
+  uploadedPDFs = []; guidelineRefs = [];
+  renderGuidelineList();
+  ['testCasesFile','criteriaFile','repoUrl','ghToken'].forEach(id => {
+    const el = document.getElementById(id); if(el) el.value='';
+  });
+  document.getElementById('engineStatus').textContent = 'Using bundled fallback engine';
+  document.getElementById('engineStatus').className = 'mt-2 text-xs text-gray-500 italic';
+  ['summaryBar','summaryDesc','filterBar','exportBtn','saveBtn','newBtn'].forEach(id => document.getElementById(id).classList.add('hidden'));
+  document.getElementById('emptyState').classList.remove('hidden');
+  document.getElementById('tableBody').innerHTML = '';
+  document.getElementById('runLog').innerHTML = '';
+  document.getElementById('testCasesStatus').textContent = '';
+  document.getElementById('criteriaStatus').textContent = '';
+  document.getElementById('detailEmpty').classList.remove('hidden');
+  document.getElementById('detailContent').classList.add('hidden');
+  document.getElementById('pdfList').innerHTML = '';
+}
+
+function refreshSummaryBar(results) {
+  const total = results.length;
+  const critOk = results.filter(r=>r.critMatch==='YES').length;
+  const nccnOk = results.filter(r=>r.nccnMatch==='YES').length;
+  const elig   = results.filter(r=>r.toolOutcome==='ELIGIBLE').length;
+  const inel   = results.filter(r=>r.toolOutcome==='INELIGIBLE').length;
+  const rev    = results.filter(r=>r.toolOutcome==='REQUIRES_REVIEW').length;
+  document.getElementById('totalCases').textContent = total;
+  document.getElementById('critPct').textContent  = `${Math.round(100*critOk/total)}% (${critOk}/${total})`;
+  document.getElementById('nccnPct').textContent   = `${Math.round(100*nccnOk/total)}% (${nccnOk}/${total})`;
+  document.getElementById('eligCount').textContent = `✅ ${elig} eligible · ⬜ ${inel} ineligible · 🟡 ${rev} review`;
+}
+
+// ─── EVALUATION ──────────────────────────────────────────────────────────────
+function runEvaluation() {
+  document.getElementById('runLog').innerHTML = '';
+  if (!testCases.length) { log('No test cases loaded — upload an XLSX first', 'warn'); return; }
+
+  const fn = engineFn || bundledAssess;
+  log(`Engine: ${engineLabel}`, 'info');
+  log(`Running ${testCases.length} cases…`, 'info');
+
+  allResults = testCases.map(tc => {
+    const def = DEF[tc.scenarioId];
+    let toolOutcome;
+    if (def) {
+      const [sc, ph, fh] = def;
+      toolOutcome = fn(sc, ph, fh);
+    } else {
+      toolOutcome = '?';
+      log(`No case definition for: ${tc.scenarioId}`, 'warn');
+    }
+    const intended = tc.intendedOutcome;
+    const critMatch = toolOutcome === intended ? 'YES' : (intended ? 'NO' : 'N/A');
+    const nccnNote  = NCCN_NOTES[tc.scenarioId] || TOOL_CORRECT_NOTES[tc.scenarioId] || '';
+    const nccnMatch = NCCN_NOTES[tc.scenarioId] ? 'NO' : (TOOL_CORRECT_NOTES[tc.scenarioId] ? 'YES' : critMatch);
+    return { ...tc, toolOutcome, critMatch, nccnMatch, nccnNote };
+  });
+
+  const total = allResults.length;
+  const critOk = allResults.filter(r=>r.critMatch==='YES').length;
+  const nccnOk = allResults.filter(r=>r.nccnMatch==='YES').length;
+
+  log(`Done: ${total} cases | Criteria ${critOk}/${total} (${Math.round(100*critOk/total)}%) | Guidelines ${nccnOk}/${total} (${Math.round(100*nccnOk/total)}%)`, 'ok');
+
+  refreshSummaryBar(allResults);
+  document.getElementById('summaryBar').classList.remove('hidden');
+
+  const summaryText = generateSummary(allResults, engineLabel);
+  document.getElementById('summaryDescText').textContent = summaryText;
+  document.getElementById('summaryDesc').classList.remove('hidden');
+
+  document.getElementById('filterBar').classList.remove('hidden');
+  document.getElementById('emptyState').classList.add('hidden');
+  document.getElementById('exportBtn').classList.remove('hidden');
+  document.getElementById('saveBtn').classList.remove('hidden');
+  document.getElementById('newBtn').classList.remove('hidden');
+
+  // Populate category filter
+  const cats = [...new Set(allResults.map(r=>r.ruleCategory).filter(Boolean))].sort();
+  const catSel = document.getElementById('filterCategory');
+  catSel.innerHTML = '<option value="">All Categories</option>';
+  cats.forEach(c => { const o=document.createElement('option'); o.value=c; o.textContent=c; catSel.appendChild(o); });
+
+  filteredResults = allResults;
+  renderTable(filteredResults);
+}
+
+function applyFilters() {
+  const search  = document.getElementById('searchBox').value.toLowerCase();
+  const outcome = document.getElementById('filterOutcome').value;
+  const crit    = document.getElementById('filterCriteria').value;
+  const nccn    = document.getElementById('filterNccn').value;
+  const cat     = document.getElementById('filterCategory').value;
+  filteredResults = allResults.filter(r =>
+    (!search  || r.scenarioId.toLowerCase().includes(search) || r.description.toLowerCase().includes(search)) &&
+    (!outcome || r.toolOutcome === outcome) &&
+    (!crit    || r.critMatch   === crit) &&
+    (!nccn    || r.nccnMatch   === nccn) &&
+    (!cat     || r.ruleCategory === cat)
+  );
+  document.getElementById('filterCount').textContent = `${filteredResults.length} shown`;
+  renderTable(filteredResults);
+}
+
+function renderTable(rows) {
+  const tbody = document.getElementById('tableBody');
+  tbody.innerHTML = '';
+  rows.forEach((r, i) => {
+    const tr = document.createElement('tr');
+    tr.className = i%2===0 ? 'bg-white' : 'bg-slate-50/50';
+    tr.onclick = () => showDetail(r, tr);
+    tr.innerHTML = `
+      <td class="px-3 py-2 font-mono text-xs text-blue-700 truncate-cell" title="${r.scenarioId}">${r.scenarioId}</td>
+      <td class="px-3 py-2 text-xs text-gray-500 truncate-cell" title="${r.ruleCategory}">${r.ruleCategory}</td>
+      <td class="px-3 py-2">${badge(r.toolOutcome)}</td>
+      <td class="px-3 py-2">${badge(r.intendedOutcome)}</td>
+      <td class="px-3 py-2">${badge(r.critMatch)}</td>
+      <td class="px-3 py-2">${badge(r.nccnMatch)}</td>
+    `;
+    tbody.appendChild(tr);
+  });
+}
+
+let selectedTr = null;
+function showDetail(r, tr) {
+  if (selectedTr) selectedTr.classList.remove('selected');
+  tr.classList.add('selected');
+  selectedTr = tr;
+  document.getElementById('detailEmpty').classList.add('hidden');
+  document.getElementById('detailContent').classList.remove('hidden');
+  document.getElementById('detailId').textContent = r.scenarioId;
+  document.getElementById('detailCategory').textContent = r.ruleCategory;
+  document.getElementById('detailDesc').textContent = r.description;
+  const toolEl = document.getElementById('detailTool');
+  toolEl.textContent = r.toolOutcome||'—';
+  toolEl.className = `badge px-2 py-0.5 rounded text-xs font-semibold ${
+    r.toolOutcome==='ELIGIBLE' ? 'badge-eligible' :
+    r.toolOutcome==='INELIGIBLE' ? 'badge-ineligible' : 'badge-review'}`;
+  const intEl = document.getElementById('detailIntended');
+  intEl.textContent = r.intendedOutcome||'—';
+  intEl.className = `badge px-2 py-0.5 rounded text-xs font-semibold ${
+    r.intendedOutcome==='ELIGIBLE' ? 'badge-eligible' :
+    r.intendedOutcome==='INELIGIBLE' ? 'badge-ineligible' : 'badge-review'}`;
+  document.getElementById('detailCrit').textContent = r.critMatch;
+  document.getElementById('detailCrit').className = `badge px-2 py-0.5 rounded text-xs font-semibold ${r.critMatch==='YES'?'badge-yes':r.critMatch==='NO'?'badge-no':'badge-na'}`;
+  document.getElementById('detailNccn').textContent = r.nccnMatch;
+  document.getElementById('detailNccn').className = `badge px-2 py-0.5 rounded text-xs font-semibold ${r.nccnMatch==='YES'?'badge-yes':r.nccnMatch==='NO'?'badge-no':'badge-na'}`;
+  if (r.nccnNote) {
+    document.getElementById('detailNote').textContent = r.nccnNote;
+    document.getElementById('detailNoteWrap').classList.remove('hidden');
+  } else {
+    document.getElementById('detailNoteWrap').classList.add('hidden');
+  }
+  document.getElementById('detailMa').textContent = r.maValid==='1' ? '✓ Yes' : r.maValid==='0' ? '✗ Known gap' : '—';
+  // PDF links
+  if (uploadedPDFs.length) {
+    document.getElementById('pdfViewerWrap').classList.remove('hidden');
+    const linksEl = document.getElementById('pdfViewerLinks');
+    linksEl.innerHTML = uploadedPDFs.map(p=>`<div class="text-xs text-blue-600 hover:underline cursor-pointer truncate" onclick="document.getElementById('pdfFrame').src='${p.url}'">📄 ${p.name}</div>`).join('');
+  }
+}
+
+// ─── INIT ─────────────────────────────────────────────────────────────────────
+renderSavedList();
+
+// ─── EXPORT ──────────────────────────────────────────────────────────────────
+function exportCSV() {
+  const header = ['ScenarioID','Input Description','Rule Category','Tool Outcome','Intended Outcome','Consistent with Criteria','Consistent with Guidelines','Guidelines Note','MA Logic Validated'];
+  const rows = filteredResults.map(r => [r.scenarioId,r.description,r.ruleCategory,r.toolOutcome,r.intendedOutcome,r.critMatch,r.nccnMatch,r.nccnNote,r.maValid]);
+  const csv = [header, ...rows].map(r => r.map(v => `"${String(v||'').replace(/"/g,'""')}"`).join(',')).join('\n');
+  const a = document.createElement('a');
+  a.href = 'data:text/csv;charset=utf-8,' + encodeURIComponent(csv);
+  a.download = 'eligibility_evaluation_results.csv';
+  a.click();
+}
+</script>
+</body>
+</html>
