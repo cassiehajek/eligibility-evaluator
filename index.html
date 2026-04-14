@@ -357,6 +357,376 @@ function loadCustomEngine(jsCode, label) {
   }
 }
 
+// ─── OUTCOME NORMALIZER ───────────────────────────────────────────────────────
+function normalizeOutcome(raw) {
+  const r = String(raw||'').trim();
+  if (!r) return '';
+  if (/^ELIGIBLE$/i.test(r) || /^criteria\s+met\s*$/i.test(r)) return 'ELIGIBLE';
+  if (/^INELIGIBLE$/i.test(r) || /^criteria\s+not\s+met\s*$/i.test(r)) return 'INELIGIBLE';
+  if (/^REQUIRES_REVIEW$/i.test(r) || /^follow[\s-]?up\s+required\s*$/i.test(r)) return 'REQUIRES_REVIEW';
+  return r; // pass through if unrecognised
+}
+
+// ─── DESCRIPTION PARSER ───────────────────────────────────────────────────────
+// Maps cancer names → condition IDs (longer/more specific keys matched first)
+const CNAME = (function(){
+  const m = {};
+  const entries = [
+    // Breast (most specific first)
+    ['triple-negative breast cancer','tnbc'],['triple negative breast cancer','tnbc'],['tnbc','tnbc'],
+    ['lobular breast cancer','lobular_breast'],['lobular breast','lobular_breast'],
+    ['multiple primary breast cancers','multiple_primary_breast'],['multiple primary breast','multiple_primary_breast'],
+    ['male breast cancer','male_breast'],['male breast','male_breast'],
+    ['breast cancer','breast'],['breast','breast'],
+    // GYN
+    ['ovarian/fallopian tube/peritoneal cancer','ovarian'],['ovarian cancer','ovarian'],['ovarian','ovarian'],
+    ['fallopian tube cancer','fallopian_tube'],['fallopian tube','fallopian_tube'],
+    ['peritoneal cancer','peritoneal'],['peritoneal','peritoneal'],
+    ['serous tubal intraepithelial carcinoma','stic'],['stic','stic'],
+    // GI
+    ['colorectal cancer','colorectal'],['colorectal','colorectal'],
+    ['endometrial cancer','endometrial'],['endometrial','endometrial'],
+    ['diffuse gastric cancer','diffuse_gastric'],['diffuse gastric','diffuse_gastric'],
+    ['gastric cancer','gastric'],['gastric','gastric'],
+    ['pancreatic cancer','pancreatic'],['pancreatic','pancreatic'],
+    ['biliary tract cancer','biliary_tract'],['biliary tract','biliary_tract'],
+    ['small intestine cancer','small_intestine'],['small intestine','small_intestine'],
+    ['urothelial cancer','urothelial'],['urothelial','urothelial'],
+    // Prostate
+    ['metastatic/high-risk prostate cancer','metastatic_prostate'],
+    ['metastatic prostate cancer','metastatic_prostate'],['metastatic prostate','metastatic_prostate'],
+    ['prostate intraductal','prostate_intraductal'],['intraductal/cribriform','prostate_intraductal'],
+    ['non-metastatic prostate cancer','prostate'],['prostate cancer','prostate'],['prostate','prostate'],
+    // LFS
+    ['soft tissue sarcoma','soft_tissue_sarcoma'],['osteosarcoma','osteosarcoma'],
+    ['rhabdomyosarcoma','rhabdomyo'],
+    ['adrenocortical carcinoma','adrenocortical'],['adrenocortical','adrenocortical'],['acc','adrenocortical'],
+    ['choroid plexus carcinoma','choroid_plexus'],['choroid plexus','choroid_plexus'],
+    ['glioblastoma','cns_tumor'],['astrocytoma','cns_tumor'],['ependymoma','cns_tumor'],['medulloblastoma','cns_tumor'],
+    ['cns tumor','cns_tumor'],['brain tumor','brain'],['brain','brain'],['meningioma','meningioma'],
+    // Rare
+    ['pheochromocytoma','pheo_para'],['paraganglioma','pheo_para'],
+    ['medullary thyroid carcinoma','medullary_thyroid'],['medullary thyroid','medullary_thyroid'],
+    ['papillary thyroid','papillary_thyroid'],['follicular thyroid','follicular_thyroid'],
+    ['mesothelioma','mesothelioma'],
+    ['uveal melanoma','uveal_melanoma'],['ocular melanoma','ocular_melanoma'],
+    // Melanoma
+    ['multiple primary invasive cutaneous melanomas','multiple_melanoma'],
+    ['multiple primary melanomas','multiple_melanoma'],
+    ['invasive cutaneous melanoma','melanoma'],['melanoma','melanoma'],
+    ['sebaceous','sebaceous'],['keratoacanthoma','keratoacanthoma'],
+    // MEN1
+    ['primary hyperparathyroidism','phpt'],['parathyroid adenoma','phpt'],['phpt','phpt'],
+    ['multigland parathyroid hyperplasia','multigland_hyperplasia'],['multigland hyperplasia','multigland_hyperplasia'],
+    ['duodenal net','duodenal_net'],['pannet','duodenal_net'],['gastrinoma','gastrinoma'],
+    ['pituitary adenoma','pituitary_adenoma'],
+    ['foregut carcinoid','foregut_carcinoid'],
+    // Hematologic
+    ['aml','aml'],['acute myeloid leukemia','aml'],
+    ['mds','mds'],['myelodysplastic syndrome','mds'],
+    ['acute leukemia','acute_leukemia'],
+    ['bone marrow failure','bone_marrow_failure'],['aplastic anemia','bone_marrow_failure'],
+    ['pediatric hypodiploid all','hypodiploid_all'],['hypodiploid all','hypodiploid_all'],['hypodiploid','hypodiploid_all'],
+    // Renal
+    ['bilateral or multifocal renal cell carcinoma','renal_cell_bilateral'],
+    ['bilateral renal cell','renal_cell_bilateral'],['renal cell carcinoma','renal_cell'],
+    ['renal cell','renal_cell'],['rcc','renal_cell'],
+    // Misc
+    ['bannayan-riley-ruvalcaba','brrs'],['brrs','brrs'],
+    ['chrpe','chrpe'],
+    ['serrated polyposis syndrome','serrated_polyposis'],['serrated polyposis','serrated_polyposis'],
+    // Category synonyms (pick representative)
+    ['ls cancer','colorectal'],['ls-related cancer','colorectal'],['lynch cancer','colorectal'],
+    ['lfs cancer','soft_tissue_sarcoma'],['lfs-spectrum cancer','soft_tissue_sarcoma'],['lfs tumor','soft_tissue_sarcoma'],
+    ['hboc cancer','breast'],['hboc-related cancer','breast'],
+    ['men1 condition','phpt'],['men1-related condition','phpt'],
+    ['hematologic cancer','aml'],['heme cancer','aml'],
+  ];
+  for (const [k,v] of entries) m[k.toLowerCase()] = v;
+  return m;
+})();
+
+function cidFromText(txt) {
+  if (!txt) return null;
+  const t = txt.toLowerCase().replace(/[()]/g,'').trim();
+  // Exact match first
+  if (CNAME[t]) return CNAME[t];
+  // Longest-key prefix match
+  let best = null, bestLen = 0;
+  for (const [k,v] of Object.entries(CNAME)) {
+    if (t.includes(k) && k.length > bestLen) { best = v; bestLen = k.length; }
+  }
+  return best;
+}
+
+function extractAge(text) {
+  if (!text) return '';
+  const t = String(text);
+  // explicit number in parens with qualifier: "(≤50)" "(not <50)" "(age 44)"
+  let m = t.match(/\(\s*(?:age\s+)?(\d+)\s*\)/i);
+  if (m) return m[1];
+  // "diagnosed age 44" or "age 44"
+  m = t.match(/diagnosed\s+age\s+(\d+)/i) || t.match(/\bage\s+(\d+)/i);
+  if (m) return m[1];
+  // ≤N or <N → N (boundary value)
+  m = t.match(/[<≤]\s*(\d+)/);
+  if (m) return String(parseInt(m[1]) - 1);
+  // ≥N → N+5 as representative (only if N≥18 to avoid matching cardinality like "≥2 relatives")
+  m = t.match(/[≥>]\s*(\d+)/);
+  if (m && parseInt(m[1]) >= 18) return String(parseInt(m[1]) + 5);
+  // bare number – strip small cardinality markers (≥2, ≥3, >5) so they don't look like ages
+  const tBare = t.replace(/[≥>]\s*\d{1,2}\b/g, '');
+  m = tBare.match(/(\d+)/);
+  if (m) return m[1];
+  return '';
+}
+
+function mkRel(degree, side) {
+  // Returns a representative relationship string for given degree and side
+  const s = (side||'').toLowerCase();
+  if (degree === 1) return s === 'paternal' ? 'Father' : 'Mother';
+  if (degree === 2) {
+    if (s === 'paternal') return 'Grandmother (Paternal)';
+    return 'Grandmother (Maternal)';
+  }
+  if (degree === 3) return s === 'paternal' ? 'First Cousin (Paternal)' : 'First Cousin (Maternal)';
+  return 'Mother';
+}
+function mkRel2(degree, side) {
+  // Alternative 2nd-degree for when we need a second relative
+  const s = (side||'').toLowerCase();
+  if (degree <= 2) return s === 'paternal' ? 'Uncle (Paternal)' : 'Aunt (Maternal)';
+  return 'First Cousin (Maternal)';
+}
+
+function parseDesc(desc) {
+  const N='No', Y='Yes';
+  const sc = {q1_prior_testing:N,q2_known_mutation:N,q3_personal_history:N,q4_colon_polyps:N,
+    q4_1_polyp_count:'',q4_2_hamartomatous_polyps:N,q4_3_juvenile_polyps:N,
+    q4_4_serrated_polyps:N,q5_family_history:N,q6_ancestry:N};
+  const ph = {};
+  const fh = [];
+  const d = (desc||'').replace(/\r?\n/g,' ').trim();
+  if (!d) return null;
+
+  // ── Survey flags ──────────────────────────────────────────────────────────
+  if (/q1.prior.testing\s*=\s*yes|\bQ1\s*[=\-–]\s*Yes|prior.{0,30}genetic.{0,30}testing/i.test(d))
+    sc.q1_prior_testing = Y;
+  if (/q2.known.mutation\s*=\s*yes|\bQ2\s*=\s*Yes|known.{0,30}familial.{0,30}mutation/i.test(d))
+    sc.q2_known_mutation = Y;
+  if (/q6.ancestry\s*=\s*yes|\bQ6\s*=\s*Yes/i.test(d) ||
+      (/(?:ashkenazi|jewish.{0,10}ancestry)/i.test(d) && !/no\s+(?:known\s+)?ashkenazi|no\s+jewish/i.test(d)))
+    sc.q6_ancestry = Y;
+
+  // ── Q4 polyps ─────────────────────────────────────────────────────────────
+  if (/q4.colon.polyps\s*=\s*yes|\bQ4\s*=\s*Yes|\bcolon\s+polyps?\b/i.test(d)) {
+    sc.q4_colon_polyps = Y;
+    if (/10\s*or\s*more|10\+|q4_1_polyp_count\s*=\s*10\+/i.test(d)) sc.q4_1_polyp_count = '10+';
+    if (/hamartomatous/i.test(d)) sc.q4_2_hamartomatous_polyps = Y;
+    if (/juvenile/i.test(d)) sc.q4_3_juvenile_polyps = Y;
+    if (/serrated\s+(?:colon\s+)?polyps/i.test(d)) sc.q4_4_serrated_polyps = Y;
+  }
+
+  // ── All-No baseline ───────────────────────────────────────────────────────
+  if (/no\s+(?:personal\s+or\s+family\s+history|screening|screen)/i.test(d) && !/yes/i.test(d))
+    return {sc, ph, fh};
+
+  // ── Method 1: personalHistory[cid] format ────────────────────────────────
+  for (const m of d.matchAll(/personalHistory\[([^\]]+)\](?:[^;]*?(?:diagnosed\s+)?(?:age\s*)?([<≤>≥]?\s*\d+[+–\-]?\d*))?/gi)) {
+    const cid = m[1].trim();
+    const age = m[2] ? extractAge(m[2]) : '';
+    if (!ph[cid]) ph[cid] = {checked:true, age};
+    sc.q3_personal_history = Y;
+  }
+
+  // ── Method 2: familyHistory[cid] in Relationship(age) format ─────────────
+  for (const m of d.matchAll(/familyHistory\[([^\]]+)\]\s+in\s+([^(]+)\(([^)]*)\)/gi)) {
+    fh.push({conditionId:m[1].trim(), relationship:m[2].trim(), age:m[3].trim()});
+    sc.q5_family_history = Y;
+  }
+
+  // ── Methods 3+4: parse from description text ──────────────────────────────
+  if (Object.keys(ph).length === 0 && fh.length === 0) {
+    // Detect PH/FH presence markers
+    const hasPH = /q3.personal.history\s*=\s*yes|\bPH\s*[:（(]/i.test(d);
+    const hasFH = /q5.family.history\s*=\s*yes|\bFH\s*[:（(]/i.test(d);
+    if (hasPH) sc.q3_personal_history = Y;
+    if (hasFH) sc.q5_family_history = Y;
+
+    // ── Extract conditionId: xxx mentions with context ────────────────────
+    // Split text at context boundaries to determine PH vs FH
+    // Segments: q3 context, q5 context
+    const q3seg = d.match(/q3.personal.history\s*=\s*Yes([^;q]*(?:;[^q5][^;]*)*)/i)?.[0] || '';
+    const q5seg = d.match(/q5.family.history\s*=\s*Yes([^;]*)/i)?.[0] || '';
+
+    // Extract conditionId: mentions from q3 segment → PH
+    for (const m of q3seg.matchAll(/conditionId:\s*([\w_]+)/gi)) {
+      const cid = m[1].trim();
+      if (!ph[cid]) {
+        // Extract age from nearby context
+        const ctx = q3seg.substring(Math.max(0, m.index-60), m.index+80);
+        ph[cid] = {checked:true, age: extractAge(ctx)};
+      }
+      sc.q3_personal_history = Y;
+    }
+
+    // Extract conditionId: mentions from q5 segment → FH
+    for (const m of q5seg.matchAll(/conditionId:\s*([\w_]+)/gi)) {
+      const cid = m[1].trim();
+      const ctx = q5seg.substring(Math.max(0, m.index-80), m.index+80);
+      const degM = ctx.match(/(\d)(?:st|nd|rd|th)[/-]?\s*(?:\d(?:st|nd|rd|th)[/-]?\s*)?degree/i);
+      const deg = degM ? parseInt(degM[1]) : 1;
+      const sideM = ctx.match(/maternal/i) ? 'maternal' : ctx.match(/paternal/i) ? 'paternal' : '';
+      const age = extractAge(ctx);
+      fh.push({conditionId:cid, relationship:mkRel(deg, sideM), age});
+      sc.q5_family_history = Y;
+    }
+
+    // ── Natural language PH/FH parsing ────────────────────────────────────
+    // Handle "PH: ..." segments
+    const phSegs = [...d.matchAll(/\bPH\s*[:(]\s*([^+;]+?)(?=\s*[+;]|\s+FH\s*[:(]|$)/gi)];
+    for (const psm of phSegs) {
+      let seg = psm[1].trim();
+      // Handle "≥2 [cancer] conditions in PH" multi-condition specials
+      if (/≥2|2\s*(?:or\s*more|plus|LFS|LS|MEN1)/i.test(seg)) {
+        // Add two representative conditions
+        if (/LS|Lynch/i.test(seg)) {
+          if (!ph.colorectal) ph.colorectal={checked:true,age:'55'};
+          if (!ph.endometrial) ph.endometrial={checked:true,age:'55'};
+        } else if (/LFS/i.test(seg)) {
+          if (!ph.soft_tissue_sarcoma) ph.soft_tissue_sarcoma={checked:true,age:'40'};
+          if (!ph.adrenocortical) ph.adrenocortical={checked:true,age:'42'};
+        } else if (/MEN1/i.test(seg)) {
+          if (!ph.pituitary_adenoma) ph.pituitary_adenoma={checked:true,age:''};
+          if (!ph.duodenal_net) ph.duodenal_net={checked:true,age:''};
+        }
+        sc.q3_personal_history = Y;
+        continue;
+      }
+      // Extract condition + age from segment
+      const age = extractAge(seg);
+      // Remove age/parenthetical noise for cleaner name extraction
+      const namePart = seg.replace(/diagnosed\s+age\s+[\d≤≥<>]+/gi,'').replace(/\([^)]*\)/g,'').replace(/any\s+age/gi,'').trim();
+      const cid = cidFromText(namePart);
+      if (cid && !ph[cid]) {
+        ph[cid] = {checked:true, age};
+        sc.q3_personal_history = Y;
+      }
+    }
+
+    // Handle "FH: ..." segments
+    const fhSegs = [...d.matchAll(/\bFH\s*[:(]\s*([^+;]+?)(?=\s*[+;]|\s+PH\s*[:(]|$)/gi)];
+    for (const fsm of fhSegs) {
+      let seg = fsm[1].trim();
+      // Detect degree
+      const degM = seg.match(/(\d)(?:st|nd|rd|th)[/\-]?(?:\d(?:st|nd|rd|th)[/\-]?)?degree/i);
+      const deg = degM ? parseInt(degM[1]) : 1;
+      const side = seg.match(/maternal/i) ? 'maternal' : seg.match(/paternal/i) ? 'paternal' : '';
+      // Detect count multiplier (≥2, ≥3, 3+)
+      const countM = seg.match(/≥\s*(\d+)|(\d+)\s*\+\s*(?:\d|\w)|(\d+)\s+or\s+more/i);
+      const count = countM ? parseInt(countM[1]||countM[2]||countM[3]) : 1;
+      const age = extractAge(seg);
+      // Extract condition name
+      const namePart = seg
+        .replace(/\d(?:st|nd|rd|th)[/\-]?(?:\d(?:st|nd|rd|th)[/\-]?)?degree\s+relative\s*/gi,'')
+        .replace(/any\s+(?:family\s+member|relative)/gi,'')
+        .replace(/(?:maternal|paternal)/gi,'')
+        .replace(/≥?\d\+?\s*(?:or\s+more)?/gi,'')
+        .replace(/\([^)]*\)/g,'')
+        .replace(/diagnosed\s+age\s+[\d≤≥<>]+/gi,'')
+        .replace(/(?:in\s+any|in\s+\d)/gi,'')
+        .trim();
+      const cid = cidFromText(namePart) || (
+        /LS|Lynch|colorectal|endometrial|gastric|urothelial/i.test(seg) ? 'colorectal' :
+        /HBOC|breast/i.test(seg) ? 'breast' :
+        /LFS|sarcoma/i.test(seg) ? 'soft_tissue_sarcoma' :
+        /MEN1|parathyroid|pituitary/i.test(seg) ? 'phpt' :
+        /hematolog|leukemia|AML|MDS/i.test(seg) ? 'aml' : null
+      );
+      if (!cid) continue;
+      sc.q5_family_history = Y;
+      if (count >= 2) {
+        // ≥2 same-side: add 2 FH entries
+        const cid2 = /breast\s+or\s+prostate|prostate/i.test(seg) ? 'prostate' : cid;
+        fh.push({conditionId:cid, relationship:mkRel(Math.min(deg,2), side), age});
+        fh.push({conditionId:cid2, relationship:mkRel2(Math.min(deg,2), side), age:''});
+        if (count >= 3) fh.push({conditionId:cid, relationship:mkRel(2,side), age:''});
+      } else {
+        fh.push({conditionId:cid, relationship:mkRel(deg, side), age});
+      }
+    }
+
+    // ── Natural language without PH:/FH: prefix ────────────────────────────
+    // Handles COMB-* descriptions like "Ashkenazi ancestry + PH breast cancer age 55 + ..."
+    // Also handles descriptions starting directly with a cancer name (implicit PH)
+    if (Object.keys(ph).length === 0 && fh.length === 0 &&
+        sc.q1_prior_testing !== Y && sc.q2_known_mutation !== Y) {
+      // Try to extract PH/FH from combination descriptions
+      const parts = d.split(/\s*\+\s*/);
+      for (const part of parts) {
+        const isPHPart = /^PH\b|\bpersonal\s+history\b|\bPH\s+\w/i.test(part);
+        const isFHPart = /^FH\b|\bfamily\s+history\b|\bFH\s+\w|\bdegree\s+relative\b/i.test(part);
+        if (isPHPart) {
+          const age = extractAge(part);
+          const namePart = part.replace(/^PH\s*[:(]?\s*/i,'').replace(/\([^)]*\)/g,'')
+            .replace(/diagnosed\s+age\s+[\d≤≥<>\-–]+/gi,'').replace(/any\s+age/gi,'').trim();
+          const cid = cidFromText(namePart);
+          if (cid && !ph[cid]) { ph[cid]={checked:true,age}; sc.q3_personal_history=Y; }
+        } else if (isFHPart) {
+          const age = extractAge(part);
+          const degM = part.match(/(\d)(?:st|nd|rd|th)/i);
+          const deg = degM ? parseInt(degM[1]) : 1;
+          const side = part.match(/maternal/i) ? 'maternal' : part.match(/paternal/i) ? 'paternal' : '';
+          const countM = part.match(/≥\s*(\d+)/);
+          const count = countM ? parseInt(countM[1]) : 1;
+          const namePart = part.replace(/^FH\s*[:(]?\s*/i,'')
+            .replace(/\d(?:st|nd|rd|th)[/\-]?(?:\d(?:st|nd|rd|th)[/\-]?)?degree\s+relative\s*/gi,'')
+            .replace(/(?:maternal|paternal)/gi,'').replace(/\([^)]*\)/g,'')
+            .replace(/diagnosed\s+age\s+[\d≤≥<>]+/gi,'').replace(/≥?\d\+?/gi,'').trim();
+          const cid = cidFromText(namePart);
+          if (cid) {
+            sc.q5_family_history = Y;
+            // When "breast or prostate" is present, use breast as first and prostate as second
+            const firstCid = /breast\s+or\s+prostate/i.test(part) ? 'breast' : cid;
+            fh.push({conditionId:firstCid, relationship:mkRel(Math.min(deg,2),side), age});
+            if (count >= 2) {
+              const secondCid = /breast\s+or\s+prostate/i.test(part) ? 'prostate' : cid;
+              fh.push({conditionId:secondCid, relationship:mkRel2(Math.min(deg,2),side), age:''});
+            }
+          }
+        } else if (/ashkenazi|jewish.*ancestry/i.test(part)) {
+          sc.q6_ancestry = Y;
+        } else {
+          // Try treating any bare cancer-name fragment as implicit PH
+          const cid = cidFromText(part.replace(/\([^)]*\)/g,'').replace(/diagnosed\s+age[\s\d≤≥<>+\-]+/gi,'').trim());
+          if (cid) {
+            const age = extractAge(part);
+            if (!ph[cid]) { ph[cid]={checked:true,age}; sc.q3_personal_history=Y; }
+          }
+        }
+      }
+      // If description starts with a cancer name (no prefix), treat whole desc as implicit PH
+      if (Object.keys(ph).length === 0 && fh.length === 0) {
+        const firstPart = d.split(/[;+]/)[0].replace(/\([^)]*\)/g,'').replace(/diagnosed\s+age[\s\d≤≥<>+\-]+/gi,'').trim();
+        const cid = cidFromText(firstPart);
+        if (cid) {
+          ph[cid] = {checked:true, age: extractAge(d.split(/[;+]/)[0])};
+          sc.q3_personal_history = Y;
+        }
+      }
+    }
+  }
+
+  // Ensure PH/FH flags reflect actual conditions
+  if (Object.keys(ph).length > 0) sc.q3_personal_history = Y;
+  if (fh.length > 0) sc.q5_family_history = Y;
+
+  const hasInput = sc.q1_prior_testing===Y||sc.q2_known_mutation===Y||sc.q4_colon_polyps===Y||
+    sc.q6_ancestry===Y||Object.keys(ph).length>0||fh.length>0||
+    sc.q3_personal_history===Y||sc.q5_family_history===Y;
+  return hasInput ? {sc, ph, fh} : null;
+}
+
 // ─── XLSX PARSER ─────────────────────────────────────────────────────────────
 document.getElementById('testCasesFile').addEventListener('change', function(e) {
   const file = e.target.files[0];
@@ -369,12 +739,17 @@ document.getElementById('testCasesFile').addEventListener('change', function(e) 
     testCases = [];
     for (let i = 1; i < data.length; i++) {
       const r = data[i];
-      if (!r[0] || !String(r[0]).trim()) continue;
+      const id = String(r[0]||'').trim();
+      if (!id) continue;
+      const desc = String(r[1]||'').trim();
+      const rawOutcome = String(r[3]||'').trim();
+      // Skip rows that look like comments/notes (no description, no outcome, ID looks like prose)
+      if (!desc && !rawOutcome) continue;
       testCases.push({
-        scenarioId:     String(r[0]||'').trim(),
-        description:    String(r[1]||'').trim(),
+        scenarioId:     id,
+        description:    desc,
         ruleCategory:   String(r[2]||'').trim(),
-        intendedOutcome:String(r[3]||'').trim(),
+        intendedOutcome:normalizeOutcome(rawOutcome),
         maValid:        String(r[4]||'').trim(),
         notes:          String(r[7]||'').trim(),
       });
@@ -974,22 +1349,37 @@ function runEvaluation() {
   log(`Engine: ${engineLabel}`, 'info');
   log(`Running ${testCases.length} cases…`, 'info');
 
+  let parsed=0, defFallback=0, skipped=0;
   allResults = testCases.map(tc => {
-    const def = DEF[tc.scenarioId];
-    let toolOutcome;
-    if (def) {
-      const [sc, ph, fh] = def;
-      toolOutcome = fn(sc, ph, fh);
+    let toolOutcome, inputSource;
+    // Try parsing inputs from description first
+    const parsed_inputs = parseDesc(tc.description);
+    if (parsed_inputs) {
+      toolOutcome = fn(parsed_inputs.sc, parsed_inputs.ph, parsed_inputs.fh);
+      inputSource = 'parsed';
+      parsed++;
     } else {
-      toolOutcome = '?';
-      log(`No case definition for: ${tc.scenarioId}`, 'warn');
+      // Fall back to hardcoded DEF table
+      const def = DEF[tc.scenarioId];
+      if (def) {
+        const [sc, ph, fh] = def;
+        toolOutcome = fn(sc, ph, fh);
+        inputSource = 'def';
+        defFallback++;
+      } else {
+        toolOutcome = '?';
+        inputSource = 'none';
+        skipped++;
+        log(`Could not parse inputs for: ${tc.scenarioId}`, 'warn');
+      }
     }
     const intended = tc.intendedOutcome;
     const critMatch = toolOutcome === intended ? 'YES' : (intended ? 'NO' : 'N/A');
     const nccnNote  = NCCN_NOTES[tc.scenarioId] || TOOL_CORRECT_NOTES[tc.scenarioId] || '';
     const nccnMatch = NCCN_NOTES[tc.scenarioId] ? 'NO' : (TOOL_CORRECT_NOTES[tc.scenarioId] ? 'YES' : critMatch);
-    return { ...tc, toolOutcome, critMatch, nccnMatch, nccnNote };
+    return { ...tc, toolOutcome, critMatch, nccnMatch, nccnNote, inputSource };
   });
+  log(`Input sources: ${parsed} parsed from description, ${defFallback} from DEF table${skipped ? ', ' + skipped + ' unparseable (?)' : ''}`, skipped ? 'warn' : 'ok');
 
   const total = allResults.length;
   const critOk = allResults.filter(r=>r.critMatch==='YES').length;
@@ -1044,8 +1434,9 @@ function renderTable(rows) {
     const tr = document.createElement('tr');
     tr.className = i%2===0 ? 'bg-white' : 'bg-slate-50/50';
     tr.onclick = () => showDetail(r, tr);
+    const srcIcon = r.inputSource==='parsed' ? '' : r.inputSource==='def' ? ' <span title="Inputs from built-in DEF table" class="text-orange-400 text-xs">DEF</span>' : ' <span title="Could not parse inputs" class="text-red-400 text-xs">?</span>';
     tr.innerHTML = `
-      <td class="px-3 py-2 font-mono text-xs text-blue-700 truncate-cell" title="${r.scenarioId}">${r.scenarioId}</td>
+      <td class="px-3 py-2 font-mono text-xs text-blue-700 truncate-cell" title="${r.scenarioId}">${r.scenarioId}${srcIcon}</td>
       <td class="px-3 py-2 text-xs text-gray-500 truncate-cell" title="${r.ruleCategory}">${r.ruleCategory}</td>
       <td class="px-3 py-2">${badge(r.toolOutcome)}</td>
       <td class="px-3 py-2">${badge(r.intendedOutcome)}</td>
